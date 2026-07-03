@@ -198,12 +198,25 @@ Respond ONLY with this JSON (no markdown, no extra text):
     "flags": ["<flag1>", "<flag2>"]
 }}
 """
-            raw = (
-                gl.nondet.exec_prompt(task).replace("```json", "").replace("```", "")
-            )
-            return json.loads(raw)
+            return gl.nondet.exec_prompt(task)
 
-        result = gl.eq_principle.strict_eq(compute_score)
+        # Bucketed consensus: validators must agree on the score tier and the
+        # risk_tier label, but summary wording and flags can differ. This
+        # avoids UNDETERMINED consensus that byte-exact strict_eq causes on
+        # LLM output. Same discipline as the sibling AI contracts.
+        principle = (
+            "Outputs are equivalent if the numeric 'score' falls in the same "
+            "bucket (0-24, 25-49, 50-74, 75-89, 90-100) AND 'risk_tier' is the "
+            "same label. 'summary' wording and 'flags' contents may differ freely."
+        )
+        raw = gl.eq_principle.prompt_comparative(compute_score, principle)
+        text = raw.strip()
+        if "```" in text:
+            parts = text.split("```")
+            text = parts[1] if len(parts) > 1 else text
+            if text.startswith("json"):
+                text = text[4:]
+        result = json.loads(text.strip())
 
         # persist updated profile
         profile["score"] = int(result["score"])

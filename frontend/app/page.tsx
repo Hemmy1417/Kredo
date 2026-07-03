@@ -3,6 +3,7 @@
 import { Navbar } from "@/components/Navbar";
 import { LoanTable } from "@/components/LoanTable";
 import { ReputationPanel } from "@/components/ReputationPanel";
+import { YourScoreCard } from "@/components/YourScoreCard";
 import { ShieldCheck, Zap, TrendingUp, Lock } from "lucide-react";
 
 const steps = [
@@ -81,6 +82,11 @@ export default function HomePage() {
                 automatically, trustlessly.
               </p>
             </div>
+          </section>
+
+          {/* ── Your reputation (only when connected) ── */}
+          <section className="animate-fade-in">
+            <YourScoreCard />
           </section>
 
           {/* ── Main grid: Loans + Reputation ── */}

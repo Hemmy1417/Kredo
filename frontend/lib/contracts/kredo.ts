@@ -42,6 +42,33 @@ class Kredo {
     return {};
   }
 
+  /**
+   * Wait for a submitted tx and REJECT if consensus was UNDETERMINED/CANCELED.
+   * The default behaviour of waitForTransactionReceipt is to return regardless,
+   * which caused mutations to falsely report success and leave stale state.
+   */
+  private async waitAndVerify(txHash: `0x${string}`): Promise<TransactionReceipt> {
+    const receipt = (await this.client.waitForTransactionReceipt({
+      hash: txHash as any,
+      status: "ACCEPTED" as any,
+      retries: 60,
+      interval: 5000,
+    })) as any;
+    const status = String(receipt?.status ?? "").toUpperCase();
+    const cd = receipt?.consensus_data ?? {};
+    const lr = cd.leader_receipt;
+    const r = Array.isArray(lr) ? lr[0] : lr;
+    if (status.includes("UNDETERMINED") || status.includes("CANCELED")) {
+      throw new Error("Validators could not reach consensus — try again");
+    }
+    if (r?.execution_result === "ERROR") {
+      const stderr: string = r?.genvm_result?.stderr ?? "";
+      const userErr = stderr.match(/UserError: (.+)/)?.[1];
+      throw new Error(userErr ?? "Contract rejected the transaction");
+    }
+    return receipt as TransactionReceipt;
+  }
+
   /** Run a readContract call; return null on any error instead of throwing */
   private async safeRead(functionName: string, args: any[] = []): Promise<any> {
     try {
@@ -175,15 +202,10 @@ class Kredo {
         args: [borrowerAddress, identitySources],
         value: BigInt(0),
       });
-      return await this.client.waitForTransactionReceipt({
-        hash: txHash,
-        status: "ACCEPTED" as any,
-        retries: 24,
-        interval: 5000,
-      }) as TransactionReceipt;
+      return await this.waitAndVerify(txHash);
     } catch (err) {
       console.error("[Kredo] evaluateIdentity failed:", err);
-      throw new Error("Failed to evaluate identity");
+      throw err instanceof Error ? err : new Error("Failed to evaluate identity");
     }
   }
 
@@ -200,15 +222,10 @@ class Kredo {
         args: [borrowerAddress, loanAmount, collateralAmount, durationDays],
         value: BigInt(0),
       });
-      return await this.client.waitForTransactionReceipt({
-        hash: txHash,
-        status: "ACCEPTED" as any,
-        retries: 24,
-        interval: 5000,
-      }) as TransactionReceipt;
+      return await this.waitAndVerify(txHash);
     } catch (err) {
       console.error("[Kredo] requestLoan failed:", err);
-      throw new Error("Failed to request loan");
+      throw err instanceof Error ? err : new Error("Failed to request loan");
     }
   }
 
@@ -220,15 +237,10 @@ class Kredo {
         args: [loanId, repaymentAmount],
         value: BigInt(0),
       });
-      return await this.client.waitForTransactionReceipt({
-        hash: txHash,
-        status: "ACCEPTED" as any,
-        retries: 24,
-        interval: 5000,
-      }) as TransactionReceipt;
+      return await this.waitAndVerify(txHash);
     } catch (err) {
       console.error("[Kredo] repayLoan failed:", err);
-      throw new Error("Failed to repay loan");
+      throw err instanceof Error ? err : new Error("Failed to repay loan");
     }
   }
 
@@ -240,15 +252,10 @@ class Kredo {
         args: [loanId],
         value: BigInt(0),
       });
-      return await this.client.waitForTransactionReceipt({
-        hash: txHash,
-        status: "ACCEPTED" as any,
-        retries: 24,
-        interval: 5000,
-      }) as TransactionReceipt;
+      return await this.waitAndVerify(txHash);
     } catch (err) {
       console.error("[Kredo] liquidateLoan failed:", err);
-      throw new Error("Failed to liquidate loan");
+      throw err instanceof Error ? err : new Error("Failed to liquidate loan");
     }
   }
 }
