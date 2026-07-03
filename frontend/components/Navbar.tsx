@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { AccountPanel } from "./AccountPanel";
+import { EvaluateIdentityModal } from "./EvaluateIdentityModal";
 import { RequestLoanModal } from "./RequestLoanModal";
 import { useLoans } from "@/lib/hooks/useKredo";
 import { Logo, LogoMark } from "./LogoWordmark";
@@ -109,6 +110,7 @@ export function Navbar() {
 
               {/* Right: Actions */}
               <div className="flex items-center gap-3">
+                <EvaluateIdentityModal />
                 <RequestLoanModal />
                 <AccountPanel />
               </div>
