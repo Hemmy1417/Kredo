@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+
+# builds
+.next/
+dist/
+out/
+*.tsbuildinfo
+
+# environment / secrets
+.env
+.env.local
+.env*.local
+
+# python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# logs / misc
+*.log
+coverage/
