@@ -64,7 +64,13 @@ class Kredo {
     if (r?.execution_result === "ERROR") {
       const stderr: string = r?.genvm_result?.stderr ?? "";
       const userErr = stderr.match(/UserError: (.+)/)?.[1];
-      throw new Error(userErr ?? "Contract rejected the transaction");
+      if (userErr) throw new Error(userErr);
+      // Fall back to the last meaningful line of the Python traceback
+      const lines = stderr.trim().split("\n").filter((l) => l.trim() && !l.startsWith("  "));
+      const lastMeaningful = lines[lines.length - 1] || "";
+      const specific = lastMeaningful.replace(/^.*?Error: /, "").slice(0, 200);
+      console.error("[Kredo] contract execution error, full stderr:", stderr);
+      throw new Error(specific || "Contract execution error — check the browser console for the Python traceback");
     }
     return receipt as TransactionReceipt;
   }
