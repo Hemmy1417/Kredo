@@ -75,6 +75,19 @@ class Kredo {
     return receipt as TransactionReceipt;
   }
 
+  /**
+   * Extract the contract's return dict from a completed receipt. Used by
+   * write helpers that want to expose the data the contract returned
+   * (e.g. evaluate_identity's AI summary + risk_tier).
+   */
+  parseReturnPayload(receipt: any): any | null {
+    const lr = receipt?.consensus_data?.leader_receipt;
+    const r = Array.isArray(lr) ? lr[0] : lr;
+    const raw = r?.result?.payload?.readable ?? r?.result?.readable ?? null;
+    if (typeof raw !== "string") return null;
+    try { return JSON.parse(JSON.parse(raw)); } catch { return null; }
+  }
+
   /** Run a readContract call; return null on any error instead of throwing */
   private async safeRead(functionName: string, args: any[] = []): Promise<any> {
     try {
@@ -126,6 +139,14 @@ class Kredo {
     // existing `* 100` displays are correct instead of always showing 0%.
     return {
       ...obj,
+      // loan_id / duration / score-at-origination arrive as u256 BigInts — normalise so
+      // React Query keys, filter comparators and arithmetic in the UI stay sane.
+      loan_id: String(obj.loan_id ?? loanId),
+      duration_days: Number(obj.duration_days ?? 0),
+      reputation_score_at_origination:
+        obj.reputation_score_at_origination != null
+          ? Number(obj.reputation_score_at_origination)
+          : null,
       collateral_ratio: (Number(obj.collateral_ratio_bps ?? 15000)) / 10000,
       interest_rate_apr: (Number(obj.interest_rate_bps ?? 2000)) / 10000,
     } as Loan;
@@ -143,9 +164,14 @@ class Kredo {
       if (!raw) return this.defaultProfile(address);
       const profile = this.toObj(raw);
       if (profile.score === undefined) return this.defaultProfile(address);
-      // Contract returns bps (basis points) to avoid float issues — convert back
+      // Contract returns bps (basis points) to avoid float issues — convert back.
+      // score / loan counts arrive as u256 BigInts — coerce so arithmetic in
+      // consumers (tierProgress, sort comparators, etc.) doesn't blow up.
       return {
         ...profile,
+        score: Number(profile.score ?? 0),
+        total_loans_repaid: Number(profile.total_loans_repaid ?? 0),
+        total_loans_defaulted: Number(profile.total_loans_defaulted ?? 0),
         collateral_ratio: (Number(profile.collateral_ratio_bps ?? 15000)) / 10000,
         interest_rate_apr: (Number(profile.interest_rate_bps ?? 2000)) / 10000,
       } as ReputationProfile;

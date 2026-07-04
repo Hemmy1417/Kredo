@@ -87,9 +87,6 @@ export function Navbar() {
               <div className="flex items-center gap-3">
                 <LogoMark size="md" className="flex md:hidden" />
                 <Logo size="md" className="hidden md:flex" />
-                <span className="text-lg md:text-xl font-bold ml-2">
-                  Identity Lending
-                </span>
               </div>
 
               {/* Center: Stats */}

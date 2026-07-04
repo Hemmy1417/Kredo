@@ -1,7 +1,8 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import { Loader2, Landmark, Clock, AlertCircle, CheckCircle2, XCircle, ShieldCheck } from "lucide-react";
-import { useLoans, useRepayLoan, useLiquidateLoan, useKredoContract } from "@/lib/hooks/useKredo";
+import { useLoans, useRepayLoan, useLiquidateLoan, useKredoContract, useReputation } from "@/lib/hooks/useKredo";
 import { useLoanTimestamps, computeLoanClock, timeAgo } from "@/lib/hooks/useLoanTimestamps";
 import { useWallet } from "@/lib/genlayer/wallet";
 import { error } from "@/lib/utils/toast";
@@ -19,7 +20,30 @@ export function LoanTable() {
   const { address, isConnected, isLoading: isWalletLoading } = useWallet();
   const { repayLoan, isRepaying, repayingLoanId } = useRepayLoan();
   const { liquidateLoan, isLiquidating, liquidatingLoanId } = useLiquidateLoan();
+  const { data: reputation } = useReputation(address);
   const timestamps = useLoanTimestamps(loans);
+  const [filter, setFilter] = useState<"all" | "active" | "repaid" | "liquidated" | "mine">("all");
+
+  const filtered = useMemo(() => {
+    const list = loans ?? [];
+    if (filter === "all") return list;
+    if (filter === "mine") return list.filter((l) => l.borrower?.toLowerCase() === address?.toLowerCase());
+    if (filter === "active") return list.filter((l) => l.status === "ACTIVE");
+    if (filter === "repaid") return list.filter((l) => l.status === "REPAID");
+    if (filter === "liquidated") return list.filter((l) => l.status === "LIQUIDATED");
+    return list;
+  }, [loans, filter, address]);
+
+  const counts = useMemo(() => {
+    const list = loans ?? [];
+    return {
+      all: list.length,
+      active: list.filter((l) => l.status === "ACTIVE").length,
+      repaid: list.filter((l) => l.status === "REPAID").length,
+      liquidated: list.filter((l) => l.status === "LIQUIDATED").length,
+      mine: list.filter((l) => l.borrower?.toLowerCase() === address?.toLowerCase()).length,
+    };
+  }, [loans, address]);
 
   const handleRepay = (loan: Loan) => {
     if (!address) {
@@ -38,7 +62,11 @@ export function LoanTable() {
       `Refund of your collateral: ${formatGen(loan.collateral_amount)} GEN.\n` +
       `Your reputation score gets a +5 boost (capped at 100).${dueBits}`
     );
-    if (confirmed) repayLoan({ loanId: loan.loan_id, repaymentAmount: loan.repayment_amount });
+    if (confirmed) repayLoan({
+      loanId: loan.loan_id,
+      repaymentAmount: loan.repayment_amount,
+      priorScore: reputation?.score ?? 0,
+    });
   };
 
   const handleLiquidate = (loan: Loan) => {
@@ -51,7 +79,11 @@ export function LoanTable() {
       `You keep the escrowed collateral (${formatGen(loan.collateral_amount)} GEN) as bounty.\n` +
       `The borrower's reputation score drops by up to 20 points.`
     );
-    if (confirmed) liquidateLoan(loan.loan_id);
+    if (confirmed) liquidateLoan({
+      loanId: loan.loan_id,
+      borrowerAddress: loan.borrower,
+      priorBorrowerScore: loan.reputation_score_at_origination ?? 0,
+    });
   };
 
   if (isLoading) {
@@ -112,6 +144,30 @@ export function LoanTable() {
 
   return (
     <div className="brand-card p-6 overflow-hidden">
+      <div className="flex flex-wrap items-center gap-1.5 mb-4">
+        {([
+          ["all", "All"],
+          ["active", "Active"],
+          ["mine", "Mine"],
+          ["repaid", "Repaid"],
+          ["liquidated", "Liquidated"],
+        ] as const).map(([key, label]) => {
+          const active = filter === key;
+          return (
+            <button
+              key={key}
+              onClick={() => setFilter(key)}
+              className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                active
+                  ? "bg-accent/20 border-accent/40 text-accent"
+                  : "bg-white/5 border-white/10 text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {label} <span className="opacity-60">({counts[key]})</span>
+            </button>
+          );
+        })}
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
@@ -146,7 +202,7 @@ export function LoanTable() {
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">
-            {loans.map((loan) => (
+            {filtered.map((loan) => (
               <LoanRow
                 key={loan.loan_id}
                 loan={loan}

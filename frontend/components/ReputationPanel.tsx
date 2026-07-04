@@ -5,10 +5,11 @@ import { useTopBorrowers, useKredoContract } from "@/lib/hooks/useKredo";
 import { useWallet } from "@/lib/genlayer/wallet";
 import { AddressDisplay } from "./AddressDisplay";
 
-export function ReputationPanel() {
+export function ReputationPanel({ layout = "vertical" }: { layout?: "vertical" | "landscape" } = {}) {
   const contract = useKredoContract();
   const { data: borrowers, isLoading, isError } = useTopBorrowers();
   const { address } = useWallet();
+  const isLandscape = layout === "landscape";
 
   const scoreColor = (score: number) =>
     score >= 75
@@ -97,11 +98,66 @@ export function ReputationPanel() {
         Top Borrowers
       </h2>
 
-      <div className="space-y-2">
+      <div
+        className={
+          isLandscape
+            ? "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3"
+            : "space-y-2"
+        }
+      >
         {borrowers.map((entry, index) => {
           const isCurrentUser =
             address?.toLowerCase() === entry.address?.toLowerCase();
           const rank = index + 1;
+
+          if (isLandscape) {
+            return (
+              <div
+                key={entry.address}
+                className={`
+                  rounded-lg border p-3 transition-all
+                  ${
+                    isCurrentUser
+                      ? "bg-accent/20 border-accent/50"
+                      : "bg-white/[0.03] border-white/10 hover:border-accent/30 hover:bg-white/5"
+                  }
+                `}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    {rank <= 3 ? scoreIcon(entry.score, "w-4 h-4") : (
+                      <span className="text-xs font-bold text-muted-foreground">#{rank}</span>
+                    )}
+                    <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                      Rank {rank}
+                    </span>
+                  </div>
+                  <div className="flex items-baseline gap-0.5">
+                    <span className={`text-xl font-bold ${scoreColor(entry.score)}`}>
+                      {entry.score}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">/100</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 mb-1">
+                  <AddressDisplay
+                    address={entry.address}
+                    maxLength={10}
+                    className="text-sm"
+                    showCopy
+                  />
+                  {isCurrentUser && (
+                    <span className="text-[10px] bg-accent/30 text-accent px-1.5 py-0.5 rounded-full font-semibold">
+                      You
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {entry.total_loans_repaid ?? 0} repaid · {entry.total_loans_defaulted ?? 0} defaulted
+                </p>
+              </div>
+            );
+          }
 
           return (
             <div

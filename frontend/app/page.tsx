@@ -4,6 +4,8 @@ import { Navbar } from "@/components/Navbar";
 import { LoanTable } from "@/components/LoanTable";
 import { ReputationPanel } from "@/components/ReputationPanel";
 import { YourScoreCard } from "@/components/YourScoreCard";
+import { ProtocolStatsStrip } from "@/components/ProtocolStatsStrip";
+import { NotificationsBanner } from "@/components/NotificationsBanner";
 import { ShieldCheck, Zap, TrendingUp, Lock } from "lucide-react";
 
 const steps = [
@@ -84,22 +86,32 @@ export default function HomePage() {
             </div>
           </section>
 
+          {/* ── Protocol stats strip ── */}
+          <section className="animate-fade-in">
+            <ProtocolStatsStrip />
+          </section>
+
+          {/* ── Notifications for connected borrower ── */}
+          <section className="animate-fade-in">
+            <NotificationsBanner />
+          </section>
+
           {/* ── Your reputation (only when connected) ── */}
           <section className="animate-fade-in">
             <YourScoreCard />
           </section>
 
-          {/* ── Main grid: Loans + Reputation ── */}
-          <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8">
-            <div className="lg:col-span-8 animate-slide-up">
-              <LoanTable />
-            </div>
-            <div
-              className="lg:col-span-4 animate-slide-up"
-              style={{ animationDelay: "100ms" }}
-            >
-              <ReputationPanel />
-            </div>
+          {/* ── Loans ── */}
+          <section className="animate-slide-up">
+            <LoanTable />
+          </section>
+
+          {/* ── Top borrowers (landscape strip beneath loans) ── */}
+          <section
+            className="animate-slide-up"
+            style={{ animationDelay: "100ms" }}
+          >
+            <ReputationPanel layout="landscape" />
           </section>
 
           {/* ── Score tiers ── */}
@@ -196,7 +208,7 @@ export default function HomePage() {
         <div className="max-w-7xl mx-auto px-4 md:px-6 lg:px-8">
           <div className="flex items-center justify-between flex-wrap gap-4">
             <span className="text-xs text-muted-foreground font-mono">
-              Identity-Linked Lending · GenLayer
+              Kredo · Reputation-based Lending on GenLayer
             </span>
             <div className="flex items-center gap-6 text-sm text-muted-foreground">
               <a href="https://genlayer.com" target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors">

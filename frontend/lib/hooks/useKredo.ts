@@ -6,12 +6,35 @@ import Kredo from "../contracts/kredo";
 import { getContractAddress, getStudioUrl } from "../genlayer/client";
 import { useWallet } from "../genlayer/wallet";
 import { success, error, configError } from "../utils/toast";
+import { useScoreEvents } from "./useScoreEvents";
 import type {
   Loan,
   ReputationProfile,
   TopBorrowerEntry,
   IdentitySource,
 } from "../contracts/types";
+
+const AI_RATIONALE_KEY = (addr: string) => `kredo_ai_rationale_${addr.toLowerCase()}`;
+
+function persistAiRationale(address: string, data: any) {
+  try {
+    localStorage.setItem(AI_RATIONALE_KEY(address), JSON.stringify({
+      summary: String(data?.summary ?? ""),
+      risk_tier: String(data?.risk_tier ?? ""),
+      flags: Array.isArray(data?.flags) ? data.flags.slice(0, 6) : [],
+      score: Number(data?.score ?? 0),
+      at: Date.now(),
+    }));
+  } catch { /* silent */ }
+}
+
+export function readAiRationale(address: string | null): { summary: string; risk_tier: string; flags: string[]; score: number; at: number } | null {
+  if (!address || typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(AI_RATIONALE_KEY(address));
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
 
 /**
  * Hook to get the Kredo contract instance.
@@ -168,26 +191,45 @@ export function useEvaluateIdentity() {
   const { address } = useWallet();
   const queryClient = useQueryClient();
   const [isEvaluating, setIsEvaluating] = useState(false);
+  const { recordEvent } = useScoreEvents(address);
 
   const mutation = useMutation({
     mutationFn: async ({
       borrowerAddress,
       identitySources,
+      priorScore,
     }: {
       borrowerAddress: string;
       identitySources: IdentitySource[];
+      priorScore: number;
     }) => {
       if (!contract) throw new Error("Contract not configured.");
       if (!address) throw new Error("Wallet not connected.");
       setIsEvaluating(true);
-      return contract.evaluateIdentity(borrowerAddress, identitySources);
+      const receipt = await contract.evaluateIdentity(borrowerAddress, identitySources);
+      const payload = contract.parseReturnPayload(receipt);
+      return { receipt, payload, priorScore };
     },
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["reputation"] });
       queryClient.invalidateQueries({ queryKey: ["topBorrowers"] });
       setIsEvaluating(false);
+      const payload = data?.payload;
+      const prior = Number(data?.priorScore ?? 0);
+      if (address && payload?.score != null) {
+        persistAiRationale(address, payload);
+        recordEvent({
+          kind: prior > 0 ? "reverified" : "verified",
+          delta: Number(payload.score) - prior,
+          fromScore: prior,
+          toScore: Number(payload.score),
+          note: `Identity ${prior > 0 ? "re-evaluated" : "evaluated"} — risk tier ${payload.risk_tier ?? "?"}`,
+          aiSummary: String(payload.summary ?? ""),
+          aiRiskTier: String(payload.risk_tier ?? ""),
+        });
+      }
       success("Identity evaluated!", {
-        description: "Your reputation score has been updated on-chain.",
+        description: `New score: ${payload?.score ?? "recorded on-chain"}`,
       });
     },
     onError: (err: any) => {
@@ -271,29 +313,47 @@ export function useRepayLoan() {
   const queryClient = useQueryClient();
   const [isRepaying, setIsRepaying] = useState(false);
   const [repayingLoanId, setRepayingLoanId] = useState<string | null>(null);
+  const { recordEvent } = useScoreEvents(address);
 
   const mutation = useMutation({
     mutationFn: async ({
       loanId,
       repaymentAmount,
+      priorScore,
     }: {
       loanId: string;
       repaymentAmount: bigint;
+      priorScore: number;
     }) => {
       if (!contract) throw new Error("Contract not configured.");
       if (!address) throw new Error("Wallet not connected.");
       setIsRepaying(true);
       setRepayingLoanId(loanId);
-      return contract.repayLoan(loanId, repaymentAmount);
+      const receipt = await contract.repayLoan(loanId, repaymentAmount);
+      const payload = contract.parseReturnPayload(receipt);
+      return { receipt, payload, loanId, priorScore };
     },
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["loans"] });
       queryClient.invalidateQueries({ queryKey: ["reputation"] });
       queryClient.invalidateQueries({ queryKey: ["topBorrowers"] });
       setIsRepaying(false);
       setRepayingLoanId(null);
+      const payload = data?.payload;
+      const to = Number(payload?.new_reputation_score ?? data?.priorScore ?? 0);
+      const from = Number(data?.priorScore ?? 0);
+      if (address) {
+        recordEvent({
+          kind: "loan_repaid",
+          delta: to - from,
+          fromScore: from,
+          toScore: to,
+          note: `Repaid loan #${data.loanId} — +${Number(payload?.score_boost ?? 0)} reputation`,
+          loanId: String(data.loanId),
+        });
+      }
       success("Loan repaid!", {
-        description: "Your reputation score has been boosted.",
+        description: `Collateral refunded · reputation +${Number(payload?.score_boost ?? 0)}`,
       });
     },
     onError: (err: any) => {
@@ -325,23 +385,39 @@ export function useLiquidateLoan() {
   const [liquidatingLoanId, setLiquidatingLoanId] = useState<string | null>(
     null
   );
+  const { recordEvent } = useScoreEvents(address);
 
   const mutation = useMutation({
-    mutationFn: async (loanId: string) => {
+    mutationFn: async (args: { loanId: string; borrowerAddress?: string; priorBorrowerScore?: number }) => {
       if (!contract) throw new Error("Contract not configured.");
       if (!address) throw new Error("Wallet not connected.");
       setIsLiquidating(true);
-      setLiquidatingLoanId(loanId);
-      return contract.liquidateLoan(loanId);
+      setLiquidatingLoanId(args.loanId);
+      const receipt = await contract.liquidateLoan(args.loanId);
+      const payload = contract.parseReturnPayload(receipt);
+      return { receipt, payload, ...args };
     },
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["loans"] });
       queryClient.invalidateQueries({ queryKey: ["reputation"] });
       queryClient.invalidateQueries({ queryKey: ["topBorrowers"] });
       setIsLiquidating(false);
       setLiquidatingLoanId(null);
+      // The event is recorded for the LIQUIDATOR's changelog (they just seized a bounty).
+      // The borrower's score drop is only surfaced to them next time they reload.
+      const payload = data?.payload;
+      if (address) {
+        recordEvent({
+          kind: "loan_defaulted",
+          delta: 0,
+          fromScore: 0,
+          toScore: 0,
+          note: `Liquidated loan #${data.loanId} — bounty ${payload?.bounty_paid ?? 0} wei`,
+          loanId: String(data.loanId),
+        });
+      }
       success("Loan liquidated!", {
-        description: "The borrower's reputation has been penalised.",
+        description: `Bounty claimed · borrower penalised by ${Number(payload?.score_penalty ?? 0)}`,
       });
     },
     onError: (err: any) => {

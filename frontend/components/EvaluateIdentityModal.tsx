@@ -83,7 +83,7 @@ export function EvaluateIdentityModal() {
     }));
 
     evaluateIdentity(
-      { borrowerAddress: address, identitySources },
+      { borrowerAddress: address, identitySources, priorScore: reputation?.score ?? 0 },
       {
         onSuccess: () => {
           setIsOpen(false);
