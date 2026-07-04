@@ -54,9 +54,9 @@ Kredo/
 
 Set once you've deployed. Update this line and the CI env:
 
-- **Address:** `0x5dF901d22b42EC9Df9adeb8fAfB8b275807672F9`
+- **Address:** `0x42600a355F3E465884099B1c9Ee6FA9c0abF734e`
 - **Network:** GenLayer Studionet
-- **Open in Studio:** [GenLayer Studio](https://studio.genlayer.com/?import-contract=0x5dF901d22b42EC9Df9adeb8fAfB8b275807672F9)
+- **Open in Studio:** [GenLayer Studio](https://studio.genlayer.com/?import-contract=0x42600a355F3E465884099B1c9Ee6FA9c0abF734e)
 
 ## Local development
 
