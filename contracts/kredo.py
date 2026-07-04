@@ -161,7 +161,20 @@ class Kredo(gl.Contract):
                 if not url:
                     continue
 
-                web_data = gl.nondet.web.render(url, mode="text")
+                # A single blocked/failed URL must NOT kill the whole consensus
+                # round — many identity sources (Etherscan, LinkedIn, some
+                # ENS pages) return 403 to validator fetchers. Skip the
+                # unreachable ones and score from what did load.
+                try:
+                    web_data = gl.nondet.web.render(url, mode="text")
+                except Exception as e:
+                    source_snippets.append(
+                        f"--- {label} ({src_type}) ---\n"
+                        f"[This source could not be fetched by validators — "
+                        f"treat as no evidence: {str(e)[:180]}]\n"
+                    )
+                    continue
+
                 source_snippets.append(
                     f"--- {label} ({src_type}) ---\n{web_data[:2000]}\n"
                 )

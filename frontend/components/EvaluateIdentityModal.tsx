@@ -20,11 +20,14 @@ import { Label } from "./ui/label";
 
 type SourceType = IdentitySource["type"];
 
+// URLs that pass GenLayer validators' fetcher. Etherscan, LinkedIn, and most
+// crypto explorers return 403 to non-browser user agents — they'll kill the
+// consensus round. Suggest fetch-friendly alternatives instead.
 const SOURCE_TYPES: { value: SourceType; label: string; placeholder: string }[] = [
-  { value: "ens",              label: "ENS name",        placeholder: "https://app.ens.domains/vitalik.eth" },
-  { value: "onchain_history",  label: "On-chain history", placeholder: "https://etherscan.io/address/0x…" },
-  { value: "gitcoin_passport", label: "Gitcoin Passport", placeholder: "https://passport.gitcoin.co/#/dashboard/0x…" },
-  { value: "credit_api",       label: "Other public identity signal", placeholder: "https://linkedin.com/in/… or personal site" },
+  { value: "ens",              label: "ENS name",         placeholder: "https://ens.mirror.xyz/… or a public ENS bio page" },
+  { value: "onchain_history",  label: "On-chain history", placeholder: "https://blockscout.com/eth/mainnet/address/0x…" },
+  { value: "gitcoin_passport", label: "Gitcoin Passport", placeholder: "https://gitcoin.co/profile/… (public)" },
+  { value: "credit_api",       label: "Other public identity signal", placeholder: "https://en.wikipedia.org/wiki/… or a personal blog / GitHub README" },
 ];
 
 type Draft = { type: SourceType; url: string };
