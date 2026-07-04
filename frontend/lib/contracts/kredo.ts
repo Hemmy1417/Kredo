@@ -222,11 +222,12 @@ class Kredo {
     durationDays: number
   ): Promise<TransactionReceipt> {
     try {
+      // Collateral moves as msg.value — the on-chain contract escrows this.
       const txHash = await this.client.writeContract({
         address: this.contractAddress,
         functionName: "request_loan",
         args: [borrowerAddress, loanAmount, collateralAmount, durationDays],
-        value: BigInt(0),
+        value: BigInt(collateralAmount),
       });
       return await this.waitAndVerify(txHash);
     } catch (err) {

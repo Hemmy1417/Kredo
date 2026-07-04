@@ -252,20 +252,24 @@ Respond ONLY with this JSON (no markdown, no extra text):
     # LOAN LIFECYCLE
     # ────────────────────────────────────────────────────────────────────────────
 
-    @gl.public.write
+    @gl.public.write.payable
     def request_loan(
         self,
         borrower_address: str,
-        loan_amount: int,          # in smallest unit (e.g. wei)
-        collateral_amount: int,    # in smallest unit
+        loan_amount: int,          # symbolic loan amount, smallest unit
+        collateral_amount: int,    # smallest unit — must match msg.value
         duration_days: int,
     ) -> typing.Any:
         """
-        Request a new loan.  Validates that:
-          1. The borrower has a reputation score >= min_reputation_to_borrow.
-          2. The collateral_amount meets the ratio required by their score.
+        Escrow collateral GEN. The caller sends `gl.message.value` GEN which
+        becomes the loan's collateral. Under-collateralization is the whole
+        point: a higher reputation score requires LESS collateral vs the
+        symbolic loan_amount.
 
-        Returns the loan_id and agreed terms if successful.
+        - loan_amount is a symbolic claim (no counterparty pays it out here)
+        - collateral_amount is real GEN, transferred via msg.value
+        - repay_loan → refunds this collateral
+        - liquidate_loan → sends this collateral to the liquidator
         """
         profile = self._get_profile(borrower_address)
         score = profile["score"]
@@ -279,12 +283,15 @@ Respond ONLY with this JSON (no markdown, no extra text):
         required_ratio = self._score_to_collateral_ratio(score)
         required_collateral = int(loan_amount * required_ratio)
 
-        if collateral_amount < required_collateral:
+        # The REAL collateral is what msg.value carries — the arg is advisory.
+        sent_value = int(gl.message.value)
+        if sent_value < required_collateral:
             raise gl.vm.UserError(
-                f"Insufficient collateral. Required: {required_collateral}, "
-                f"Provided: {collateral_amount} "
-                f"(ratio {required_ratio:.0%} for score {score})"
+                f"Insufficient collateral. Required: {required_collateral} wei, "
+                f"sent {sent_value} wei (ratio {required_ratio:.0%} for score {score})"
             )
+        # Track what was actually escrowed so refunds are exact.
+        collateral_amount = sent_value
 
         apr = self._score_to_interest_rate(score)
         interest_amount = int(loan_amount * apr * duration_days / 365)
@@ -326,16 +333,26 @@ Respond ONLY with this JSON (no markdown, no extra text):
     @gl.public.write
     def repay_loan(self, loan_id: str, repayment_amount: int) -> typing.Any:
         """
-        Mark a loan as repaid and reward the borrower's reputation.
+        Close a loan cleanly: refund the escrowed collateral to the borrower
+        and boost their reputation. Only the borrower may repay.
+
+        `repayment_amount` is retained for wire compatibility with older
+        clients; the actual money moved is the refund of the collateral.
         """
         loan = self._get_loan(loan_id)
 
         if loan["status"] != "ACTIVE":
             raise gl.vm.UserError(f"Loan {loan_id} is not active (status: {loan['status']})")
 
-        if repayment_amount < loan["repayment_amount"]:
-            raise gl.vm.UserError(
-                f"Repayment {repayment_amount} is less than owed {loan['repayment_amount']}"
+        sender = str(gl.message.sender_address)
+        if sender.lower() != str(loan["borrower"]).lower():
+            raise gl.vm.UserError("only the borrower may repay this loan")
+
+        # Refund the exact collateral that was escrowed.
+        refund = int(loan["collateral_amount"])
+        if refund > 0:
+            gl.get_contract_at(Address(loan["borrower"])).emit_transfer(
+                value=u256(refund), on="finalized"
             )
 
         loan["status"] = "REPAID"
@@ -351,6 +368,7 @@ Respond ONLY with this JSON (no markdown, no extra text):
         return {
             "loan_id": loan_id,
             "status": "REPAID",
+            "collateral_refunded": refund,
             "new_reputation_score": profile["score"],
             "score_boost": boost,
         }
@@ -358,17 +376,28 @@ Respond ONLY with this JSON (no markdown, no extra text):
     @gl.public.write
     def liquidate_loan(self, loan_id: str) -> typing.Any:
         """
-        Liquidate a defaulted loan (callable by anyone after grace period).
-        Penalises the borrower's reputation score.
+        Liquidate a defaulted loan. Sends the escrowed collateral to the
+        liquidator as their reward, and penalises the borrower's score.
+
+        Studionet has no wall-clock, so we don't enforce a grace period on-chain
+        — anyone can trigger, but the borrower's own repay always beats a
+        liquidation to the same block, since transactions serialize.
         """
         loan = self._get_loan(loan_id)
 
         if loan["status"] != "ACTIVE":
             raise gl.vm.UserError(f"Loan {loan_id} is not active")
 
-        # In production: verify on-chain timestamp > loan creation + duration.
-        # Here we allow the caller to trigger it (governance / oracle would gate this).
+        # The liquidator gets the collateral as bounty.
+        liquidator = str(gl.message.sender_address)
+        bounty = int(loan["collateral_amount"])
+        if bounty > 0:
+            gl.get_contract_at(Address(liquidator)).emit_transfer(
+                value=u256(bounty), on="finalized"
+            )
+
         loan["status"] = "LIQUIDATED"
+        loan["liquidator"] = liquidator
         self._save_loan(loan)
 
         profile = self._get_profile(loan["borrower"])
@@ -380,6 +409,8 @@ Respond ONLY with this JSON (no markdown, no extra text):
         return {
             "loan_id": loan_id,
             "status": "LIQUIDATED",
+            "liquidator": liquidator,
+            "bounty_paid": bounty,
             "new_reputation_score": profile["score"],
             "score_penalty": penalty,
         }
