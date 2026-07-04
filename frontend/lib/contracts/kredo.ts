@@ -121,7 +121,14 @@ class Kredo {
   async getLoan(loanId: string): Promise<Loan> {
     const raw = await this.safeRead("get_loan", [loanId]);
     if (!raw) throw new Error(`Loan ${loanId} not found`);
-    return this.toObj(raw) as Loan;
+    const obj = this.toObj(raw);
+    // Contract stores rate/ratio as bps ints — convert to decimals so the UI's
+    // existing `* 100` displays are correct instead of always showing 0%.
+    return {
+      ...obj,
+      collateral_ratio: (Number(obj.collateral_ratio_bps ?? 15000)) / 10000,
+      interest_rate_apr: (Number(obj.interest_rate_bps ?? 2000)) / 10000,
+    } as Loan;
   }
 
   /**

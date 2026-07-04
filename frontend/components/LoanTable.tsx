@@ -1,7 +1,8 @@
 "use client";
 
-import { Loader2, Landmark, Clock, AlertCircle, CheckCircle2, XCircle } from "lucide-react";
+import { Loader2, Landmark, Clock, AlertCircle, CheckCircle2, XCircle, ShieldCheck } from "lucide-react";
 import { useLoans, useRepayLoan, useLiquidateLoan, useKredoContract } from "@/lib/hooks/useKredo";
+import { useLoanTimestamps, computeLoanClock, timeAgo } from "@/lib/hooks/useLoanTimestamps";
 import { useWallet } from "@/lib/genlayer/wallet";
 import { error } from "@/lib/utils/toast";
 import { AddressDisplay } from "./AddressDisplay";
@@ -10,33 +11,47 @@ import { Badge } from "./ui/badge";
 import type { Loan } from "@/lib/contracts/types";
 import { formatGen } from "@/lib/utils";
 
+type LoanClock = ReturnType<typeof computeLoanClock>;
+
 export function LoanTable() {
   const contract = useKredoContract();
   const { data: loans, isLoading, isError } = useLoans();
   const { address, isConnected, isLoading: isWalletLoading } = useWallet();
   const { repayLoan, isRepaying, repayingLoanId } = useRepayLoan();
   const { liquidateLoan, isLiquidating, liquidatingLoanId } = useLiquidateLoan();
+  const timestamps = useLoanTimestamps(loans);
 
-  const handleRepay = (loanId: string, repaymentAmount: bigint) => {
+  const handleRepay = (loan: Loan) => {
     if (!address) {
       error("Please connect your wallet to repay loans");
       return;
     }
+    const clock = computeLoanClock(loan, timestamps);
+    const dueBits =
+      clock.remainingDays === null
+        ? ""
+        : clock.remainingDays >= 0
+        ? `\nDue in ${Math.max(1, Math.round(clock.remainingDays))} day(s).`
+        : `\nOverdue by ${Math.abs(Math.round(clock.remainingDays))} day(s).`;
     const confirmed = confirm(
-      `Repay loan #${loanId}? Amount due: ${formatGen(repaymentAmount)} GEN`
+      `Repay loan #${loan.loan_id}?\n\n` +
+      `Refund of your collateral: ${formatGen(loan.collateral_amount)} GEN.\n` +
+      `Your reputation score gets a +5 boost (capped at 100).${dueBits}`
     );
-    if (confirmed) repayLoan({ loanId, repaymentAmount });
+    if (confirmed) repayLoan({ loanId: loan.loan_id, repaymentAmount: loan.repayment_amount });
   };
 
-  const handleLiquidate = (loanId: string) => {
+  const handleLiquidate = (loan: Loan) => {
     if (!address) {
       error("Please connect your wallet to liquidate loans");
       return;
     }
     const confirmed = confirm(
-      `Liquidate loan #${loanId}? This will penalise the borrower's reputation.`
+      `Liquidate loan #${loan.loan_id}?\n\n` +
+      `You keep the escrowed collateral (${formatGen(loan.collateral_amount)} GEN) as bounty.\n` +
+      `The borrower's reputation score drops by up to 20 points.`
     );
-    if (confirmed) liquidateLoan(loanId);
+    if (confirmed) liquidateLoan(loan.loan_id);
   };
 
   if (isLoading) {
@@ -117,6 +132,12 @@ export function LoanTable() {
                 APR
               </th>
               <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Duration
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Due
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 Status
               </th>
               <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -129,6 +150,7 @@ export function LoanTable() {
               <LoanRow
                 key={loan.loan_id}
                 loan={loan}
+                clock={computeLoanClock(loan, timestamps)}
                 currentAddress={address}
                 isConnected={isConnected}
                 isWalletLoading={isWalletLoading}
@@ -141,19 +163,47 @@ export function LoanTable() {
           </tbody>
         </table>
       </div>
+      <p className="px-4 py-3 text-xs text-muted-foreground border-t border-white/5">
+        Timestamps are tracked by your browser. Studionet has no on-chain wall-clock — a production
+        deploy would source time from a validator oracle.
+      </p>
     </div>
   );
 }
 
 interface LoanRowProps {
   loan: Loan;
+  clock: LoanClock;
   currentAddress: string | null;
   isConnected: boolean;
   isWalletLoading: boolean;
-  onRepay: (loanId: string, repaymentAmount: bigint) => void;
-  onLiquidate: (loanId: string) => void;
+  onRepay: (loan: Loan) => void;
+  onLiquidate: (loan: Loan) => void;
   isRepaying: boolean;
   isLiquidating: boolean;
+}
+
+function DueChip({ clock, status }: { clock: LoanClock; status: string }) {
+  if (status === "REPAID") return <span className="text-xs text-muted-foreground">—</span>;
+  if (status === "LIQUIDATED") return <span className="text-xs text-muted-foreground">Closed</span>;
+  if (clock.remainingDays === null) {
+    return <span className="text-xs text-muted-foreground">Not observed here</span>;
+  }
+  const d = clock.remainingDays;
+  const label =
+    d < 0 ? `Overdue by ${Math.abs(Math.round(d))}d`
+    : d < 1 ? "Due today"
+    : `Due in ${Math.round(d)}d`;
+  const cls =
+    d < 0 ? "bg-red-500/15 text-red-400 border-red-500/30"
+    : d < 3 ? "bg-orange-500/15 text-orange-400 border-orange-500/30"
+    : d < 7 ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/30"
+    : "bg-green-500/15 text-green-400 border-green-500/30";
+  return (
+    <Badge variant="outline" className={cls}>
+      {label}
+    </Badge>
+  );
 }
 
 function statusBadge(status: string) {
@@ -184,6 +234,7 @@ function statusBadge(status: string) {
 
 function LoanRow({
   loan,
+  clock,
   currentAddress,
   isConnected,
   isWalletLoading,
@@ -226,6 +277,11 @@ function LoanRow({
           <span className="text-xs text-muted-foreground">
             Repay: {formatGen(loan.repayment_amount)} GEN
           </span>
+          {clock.createdAt !== null && (
+            <span className="text-[11px] text-muted-foreground/70 mt-0.5">
+              Requested {timeAgo(clock.createdAt)}
+            </span>
+          )}
         </div>
       </td>
       <td className="px-4 py-4">
@@ -236,6 +292,12 @@ function LoanRow({
           <span className="text-xs text-muted-foreground">
             {collateralPct}% ratio
           </span>
+          {loan.reputation_score_at_origination != null && (
+            <span className="text-[11px] text-muted-foreground/70 mt-0.5 inline-flex items-center gap-1">
+              <ShieldCheck className="w-3 h-3" />
+              Score {loan.reputation_score_at_origination} at request
+            </span>
+          )}
         </div>
       </td>
       <td className="px-4 py-4">
@@ -243,12 +305,18 @@ function LoanRow({
           {aprPercent}%
         </Badge>
       </td>
+      <td className="px-4 py-4">
+        <span className="text-sm">{loan.duration_days ?? "—"} d</span>
+      </td>
+      <td className="px-4 py-4">
+        <DueChip clock={clock} status={loan.status} />
+      </td>
       <td className="px-4 py-4">{statusBadge(loan.status)}</td>
       <td className="px-4 py-4">
         <div className="flex items-center gap-2">
           {canRepay && (
             <Button
-              onClick={() => onRepay(loan.loan_id, loan.repayment_amount)}
+              onClick={() => onRepay(loan)}
               disabled={isRepaying}
               size="sm"
               variant="gradient"
@@ -265,7 +333,7 @@ function LoanRow({
           )}
           {canLiquidate && (
             <Button
-              onClick={() => onLiquidate(loan.loan_id)}
+              onClick={() => onLiquidate(loan)}
               disabled={isLiquidating}
               size="sm"
               variant="outline"
