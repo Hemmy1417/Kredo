@@ -32,7 +32,7 @@ jobs:
       - run: npm ci
       - run: npx next build
         env:
-          NEXT_PUBLIC_CONTRACT_ADDRESS: "0x0000000000000000000000000000000000000000"
+          NEXT_PUBLIC_CONTRACT_ADDRESS: "0xD727B2bbCC7282Ce4A8044455C6335d8C8202dCf"
           NEXT_PUBLIC_GENLAYER_RPC_URL: "https://studio.genlayer.com/api"
           NEXT_PUBLIC_GENLAYER_CHAIN_ID: "61999"
           NEXT_PUBLIC_GENLAYER_CHAIN_NAME: "GenLayer Studio"
