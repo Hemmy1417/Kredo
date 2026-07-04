@@ -6,6 +6,23 @@ Traditional DeFi lending demands 150% collateral because chains can't tell a str
 
 **The pitch in one line:** your reputation is your credit history.
 
+**Live:** [kredo-six.vercel.app](https://kredo-six.vercel.app)
+
+---
+
+## Features
+
+- **AI-scored reputation** — GenLayer validators independently fetch each identity URL, an LLM scores the combined evidence, and consensus writes the score to chain
+- **Real GEN escrow** — collateral is held on-chain as `msg.value` and paid out via `emit_transfer` on repay or liquidation
+- **Score changelog + AI rationale** — every reputation change is stored client-side with the AI's summary, risk tier and flags
+- **Achievements** — first verify, first loan, tier milestones, repayment streaks, clean-slate borrower
+- **Loan health at a glance** — due-in-X-days chip, overdue alerts, origination score, timestamp trail
+- **Filter tabs** — filter loans by All / Active / Mine / Repaid / Liquidated with live counts
+- **Protocol stats strip** — loans issued, GEN currently escrowed, repayment rate, unique borrowers
+- **Notifications banner** — due-soon and overdue alerts for the connected borrower
+- **Top borrowers landscape strip** — landing-page leaderboard of wallets with settled loans, sorted by score
+- **Live animated backdrop** — aurora blobs, panning grid, conic beam, floating particles (respects `prefers-reduced-motion`)
+
 ---
 
 ## How it works
@@ -31,7 +48,15 @@ A normal smart contract can't fetch a URL. A normal oracle can't read natural-la
 
 - `gl.nondet.web.render(url, mode="text")` — validators each fetch the identity data URLs independently
 - `gl.nondet.exec_prompt(...)` — an LLM analyzes the combined evidence
-- `gl.eq_principle.strict_eq(...)` — validators must agree on the numeric score, then it's committed to chain
+- `gl.eq_principle.prompt_comparative(...)` — validators bucket their outputs on shape (score band + risk tier) rather than byte-for-byte, so LLM stylistic variation never kills a consensus round
+
+The lending side of the contract is fully payable:
+
+- `request_loan` is `@gl.public.write.payable` — the borrower's collateral is escrowed as real `msg.value` (GEN)
+- `repay_loan` refunds the collateral via `emit_transfer(..., on="finalized")` and boosts reputation
+- `liquidate_loan` pays the escrowed collateral to whoever calls it as a bounty and penalises the borrower
+
+All internal accounting is done in **basis points** (integers) so wei-scale amounts (>1e15) don't lose precision to Python floats.
 
 ## Project structure
 
@@ -42,12 +67,18 @@ Kredo/
 ├── gltest.config.yaml
 ├── tests/direct/                 # direct-mode contract tests (pytest)
 └── frontend/
-    ├── app/                      # Next.js app (landing, loan flows)
-    ├── components/               # UI (wordmark, panels, modals)
+    ├── app/                      # Next.js 16 app (landing, providers, backdrop)
+    ├── components/               # UI (wordmark, score card, loan table,
+    │                             #     modals, protocol stats, notifications,
+    │                             #     live backdrop)
     └── lib/
         ├── genlayer/             # client + wallet provider
-        ├── contracts/            # typed contract wrapper
-        └── hooks/                # useKredo
+        ├── contracts/            # typed contract wrapper (kredo.ts)
+        ├── achievements.ts       # pure fn: reputation + events → badges
+        └── hooks/
+            ├── useKredo.ts       # read/write hooks + AI-rationale persistence
+            ├── useScoreEvents.ts # client-side score changelog per wallet
+            └── useLoanTimestamps.ts # first-seen timestamps for due-date maths
 ```
 
 ## Contract
