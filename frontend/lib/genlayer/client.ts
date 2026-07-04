@@ -44,15 +44,14 @@ export function getStudioUrl(): string {
 }
 
 /**
- * Get the contract address from environment variables
+ * Get the contract address from environment variables.
+ * Trimmed defensively — trailing whitespace in Vercel env vars is a
+ * frequent copy-paste error that crashes viem with InvalidAddressError.
  */
 export function getContractAddress(): string {
   const address = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS;
-  if (!address) {
-    // Return empty string during build, error will be shown in UI during runtime
-    return "";
-  }
-  return address;
+  if (!address) return "";
+  return address.trim();
 }
 
 /**
