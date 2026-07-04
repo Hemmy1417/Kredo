@@ -104,7 +104,9 @@ export function useTopBorrowers() {
   const { data: loans } = useLoans();
 
   return useQuery<TopBorrowerEntry[], Error>({
-    queryKey: ["topBorrowers", loans],
+    // Key on a lightweight derivative — never the raw Loan[] (u256 fields
+    // are BigInt and crash JSON.stringify inside React Query's hashKey).
+    queryKey: ["topBorrowers", loans?.length ?? 0, loans?.map((l) => l.loan_id).join(",") ?? ""],
     queryFn: async () => {
       if (!contract || !loans || loans.length === 0) return [];
 
