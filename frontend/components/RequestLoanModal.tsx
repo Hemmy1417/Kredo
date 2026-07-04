@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { Plus, Loader2, Coins, Clock, ShieldCheck } from "lucide-react";
 import { useRequestLoan, usePreviewLoanTerms } from "@/lib/hooks/useKredo";
+import { parseGen, formatGen } from "@/lib/utils";
 import { useWallet } from "@/lib/genlayer/wallet";
 import { error } from "@/lib/utils/toast";
 import { Button } from "./ui/button";
@@ -49,7 +50,7 @@ export function RequestLoanModal() {
       setPreviewData(null);
       return;
     }
-    preview({ borrowerAddress: address, loanAmount: amount, durationDays: days })
+    preview({ borrowerAddress: address, loanAmount: parseGen(loanAmount), durationDays: days })
       .then(setPreviewData)
       .catch(() => setPreviewData(null));
   }, [loanAmount, durationDays, address]);
@@ -57,10 +58,10 @@ export function RequestLoanModal() {
   const validateForm = (): boolean => {
     const newErrors = { loanAmount: "", collateralAmount: "", durationDays: "" };
 
-    if (!loanAmount || parseInt(loanAmount) <= 0)
+    if (!loanAmount || parseFloat(loanAmount) <= 0)
       newErrors.loanAmount = "Enter a valid loan amount";
 
-    if (!collateralAmount || parseInt(collateralAmount) <= 0)
+    if (!collateralAmount || parseFloat(collateralAmount) <= 0)
       newErrors.collateralAmount = "Enter a valid collateral amount";
 
     if (!durationDays || parseInt(durationDays) <= 0)
@@ -82,8 +83,8 @@ export function RequestLoanModal() {
 
     requestLoan({
       borrowerAddress: address,
-      loanAmount: parseInt(loanAmount),
-      collateralAmount: parseInt(collateralAmount),
+      loanAmount: parseGen(loanAmount),
+      collateralAmount: parseGen(collateralAmount),
       durationDays: parseInt(durationDays),
     });
   };
@@ -112,7 +113,7 @@ export function RequestLoanModal() {
   // Auto-fill collateral from preview
   useEffect(() => {
     if (previewData?.required_collateral) {
-      setCollateralAmount(String(previewData.required_collateral));
+      setCollateralAmount(formatGen(previewData.required_collateral));
     }
   }, [previewData]);
 
@@ -145,8 +146,9 @@ export function RequestLoanModal() {
             <Input
               id="loanAmount"
               type="number"
-              min="1"
-              placeholder="e.g. 1000"
+              min="0.000001"
+              step="any"
+              placeholder="e.g. 10"
               value={loanAmount}
               onChange={(e) => {
                 setLoanAmount(e.target.value);
@@ -168,7 +170,8 @@ export function RequestLoanModal() {
             <Input
               id="durationDays"
               type="number"
-              min="1"
+              min="0.000001"
+              step="any"
               placeholder="e.g. 30"
               value={durationDays}
               onChange={(e) => {
@@ -221,7 +224,7 @@ export function RequestLoanModal() {
                   <div>
                     <p className="text-xs text-muted-foreground">Total repayment</p>
                     <p className="font-semibold">
-                      {previewData.repayment_amount?.toLocaleString() ?? "—"}
+                      {formatGen(previewData.repayment_amount)} GEN
                     </p>
                   </div>
                   <div className="col-span-2">
@@ -229,7 +232,7 @@ export function RequestLoanModal() {
                       Required collateral
                     </p>
                     <p className="font-semibold text-accent">
-                      {previewData.required_collateral?.toLocaleString() ?? "—"}
+                      {formatGen(previewData.required_collateral)} GEN
                     </p>
                   </div>
                   {!previewData.eligible && (
@@ -252,14 +255,15 @@ export function RequestLoanModal() {
               Collateral Amount
               {previewData?.required_collateral && (
                 <span className="text-xs text-muted-foreground ml-auto">
-                  min {previewData.required_collateral.toLocaleString()}
+                  min {formatGen(previewData.required_collateral)} GEN
                 </span>
               )}
             </Label>
             <Input
               id="collateralAmount"
               type="number"
-              min="1"
+              min="0.000001"
+              step="any"
               placeholder="e.g. 800"
               value={collateralAmount}
               onChange={(e) => {

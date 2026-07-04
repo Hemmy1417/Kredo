@@ -77,39 +77,17 @@ class Kredo(gl.Contract):
     def _save_loan(self, loan: dict) -> None:
         self.loans[loan["loan_id"]] = json.dumps(loan)
 
-    def _score_to_collateral_ratio(self, score: int) -> typing.Any:
+    def _score_to_collateral_ratio_bps(self, score: int) -> int:
         """
-        Maps reputation score (0-100) to required collateral ratio.
+        Maps reputation score (0-100) to required collateral ratio in basis
+        points (1% = 100 bps). Integer math throughout so wei-scale amounts
+        keep full precision.
 
-        Score  0  → 150 % collateral  (standard DeFi)
-        Score 50  → 110 %
-        Score 75  → 90 %  (undercollateralised)
-        Score 90+ → 70 %  (highly trusted borrower)
-        """
-        if score < 0:
-            score = 0
-        if score > 100:
-            score = 100
-
-        if score >= 90:
-            return 0.70
-        elif score >= 75:
-            return 0.90
-        elif score >= 50:
-            return 1.10
-        elif score >= 25:
-            return 1.30
-        else:
-            return 1.50
-
-    def _score_to_interest_rate(self, score: int) -> typing.Any:
-        """
-        Maps reputation score (0-100) to annual interest rate (as a fraction).
-
-        Score  0  → 20 % APR
-        Score 50  → 12 %
-        Score 75  → 8 %
-        Score 90+ → 5 %
+        Score  0  → 15000 (150 % collateral)
+        Score 25 → 13000 (130 %)
+        Score 50 → 11000 (110 %)
+        Score 75 → 9000  (90 %)
+        Score 90 → 7000  (70 %)
         """
         if score < 0:
             score = 0
@@ -117,15 +95,41 @@ class Kredo(gl.Contract):
             score = 100
 
         if score >= 90:
-            return 0.05
+            return 7000
         elif score >= 75:
-            return 0.08
+            return 9000
         elif score >= 50:
-            return 0.12
+            return 11000
         elif score >= 25:
-            return 0.15
+            return 13000
         else:
-            return 0.20
+            return 15000
+
+    def _score_to_interest_rate_bps(self, score: int) -> int:
+        """
+        Annual interest rate in basis points (1 % = 100 bps).
+
+        Score  0  → 2000 (20 % APR)
+        Score 25 → 1500 (15 %)
+        Score 50 → 1200 (12 %)
+        Score 75 → 800  (8 %)
+        Score 90 → 500  (5 %)
+        """
+        if score < 0:
+            score = 0
+        if score > 100:
+            score = 100
+
+        if score >= 90:
+            return 500
+        elif score >= 75:
+            return 800
+        elif score >= 50:
+            return 1200
+        elif score >= 25:
+            return 1500
+        else:
+            return 2000
 
     # ────────────────────────────────────────────────────────────────────────────
     # REPUTATION  (AI-powered, reads real-world data)
@@ -244,8 +248,8 @@ Respond ONLY with this JSON (no markdown, no extra text):
             "summary": result["summary"],
             "risk_tier": result["risk_tier"],
             "flags": result.get("flags", []),
-            "collateral_ratio_bps": int(self._score_to_collateral_ratio(result["score"]) * 10000),
-            "interest_rate_bps": int(self._score_to_interest_rate(result["score"]) * 10000),
+            "collateral_ratio_bps": self._score_to_collateral_ratio_bps(result["score"]),
+            "interest_rate_bps": self._score_to_interest_rate_bps(result["score"]),
         }
 
     # ────────────────────────────────────────────────────────────────────────────
@@ -280,21 +284,20 @@ Respond ONLY with this JSON (no markdown, no extra text):
                 f"{int(self.min_reputation_to_borrow)} required to borrow"
             )
 
-        required_ratio = self._score_to_collateral_ratio(score)
-        required_collateral = int(loan_amount * required_ratio)
+        # All math in BPS to keep wei-scale amounts precise (Python floats
+        # lose precision above ~1e15, and loans are 1e18+ wei).
+        ratio_bps = self._score_to_collateral_ratio_bps(score)
+        apr_bps   = self._score_to_interest_rate_bps(score)
+        required_collateral = (loan_amount * ratio_bps) // 10000
 
-        # The REAL collateral is what msg.value carries — the arg is advisory.
         sent_value = int(gl.message.value)
         if sent_value < required_collateral:
             raise gl.vm.UserError(
                 f"Insufficient collateral. Required: {required_collateral} wei, "
-                f"sent {sent_value} wei (ratio {required_ratio:.0%} for score {score})"
+                f"sent {sent_value} wei (ratio {ratio_bps//100}% for score {score})"
             )
-        # Track what was actually escrowed so refunds are exact.
         collateral_amount = sent_value
-
-        apr = self._score_to_interest_rate(score)
-        interest_amount = int(loan_amount * apr * duration_days / 365)
+        interest_amount = (loan_amount * apr_bps * duration_days) // (10000 * 365)
         repayment_amount = loan_amount + interest_amount
 
         self.loan_counter = u256(int(self.loan_counter) + 1)
@@ -305,8 +308,8 @@ Respond ONLY with this JSON (no markdown, no extra text):
             "borrower": borrower_address,
             "loan_amount": loan_amount,
             "collateral_amount": collateral_amount,
-            "collateral_ratio_bps": int(required_ratio * 10000),
-            "interest_rate_bps": int(apr * 10000),
+            "collateral_ratio_bps": ratio_bps,
+            "interest_rate_bps": apr_bps,
             "interest_amount": interest_amount,
             "repayment_amount": repayment_amount,
             "duration_days": duration_days,
@@ -322,8 +325,8 @@ Respond ONLY with this JSON (no markdown, no extra text):
             "loan_amount": loan_amount,
             "collateral_amount": collateral_amount,
             "required_collateral": required_collateral,
-            "collateral_ratio_bps": int(required_ratio * 10000),
-            "interest_rate_bps": int(apr * 10000),
+            "collateral_ratio_bps": ratio_bps,
+            "interest_rate_bps": apr_bps,
             "interest_amount": interest_amount,
             "repayment_amount": repayment_amount,
             "duration_days": duration_days,
@@ -453,8 +456,8 @@ Respond ONLY with this JSON (no markdown, no extra text):
         score = profile["score"]
         return {
             **profile,
-            "collateral_ratio_bps": int(self._score_to_collateral_ratio(score) * 10000),
-            "interest_rate_bps": int(self._score_to_interest_rate(score) * 10000),
+            "collateral_ratio_bps": self._score_to_collateral_ratio_bps(score),
+            "interest_rate_bps": self._score_to_interest_rate_bps(score),
         }
 
     @gl.public.view
@@ -473,18 +476,18 @@ Respond ONLY with this JSON (no markdown, no extra text):
         """
         profile = self._get_profile(borrower_address)
         score = profile["score"]
-        ratio = self._score_to_collateral_ratio(score)
-        apr = self._score_to_interest_rate(score)
-        required_collateral = int(loan_amount * ratio)
-        interest = int(loan_amount * apr * duration_days / 365)
+        ratio_bps = self._score_to_collateral_ratio_bps(score)
+        apr_bps   = self._score_to_interest_rate_bps(score)
+        required_collateral = (loan_amount * ratio_bps) // 10000
+        interest = (loan_amount * apr_bps * duration_days) // (10000 * 365)
 
         return {
             "borrower": borrower_address,
             "reputation_score": score,
             "loan_amount": loan_amount,
             "required_collateral": required_collateral,
-            "collateral_ratio_bps": int(ratio * 10000),
-            "interest_rate_bps": int(apr * 10000),
+            "collateral_ratio_bps": ratio_bps,
+            "interest_rate_bps": apr_bps,
             "interest_amount": interest,
             "repayment_amount": loan_amount + interest,
             "duration_days": duration_days,

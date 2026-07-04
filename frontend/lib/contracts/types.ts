@@ -5,12 +5,12 @@
 export interface Loan {
   loan_id: string;
   borrower: string;
-  loan_amount: number;
-  collateral_amount: number;
+  loan_amount: bigint;
+  collateral_amount: bigint;
   collateral_ratio: number;
   interest_rate_apr: number;
-  interest_amount: number;
-  repayment_amount: number;
+  interest_amount: bigint;
+  repayment_amount: bigint;
   duration_days: number;
   reputation_score_at_origination: number;
   status: "ACTIVE" | "REPAID" | "LIQUIDATED";
@@ -39,12 +39,12 @@ export interface IdentitySource {
 export interface LoanPreview {
   borrower: string;
   reputation_score: number;
-  loan_amount: number;
+  loan_amount: bigint;
   required_collateral: number;
   collateral_ratio: number;
   interest_rate_apr: number;
-  interest_amount: number;
-  repayment_amount: number;
+  interest_amount: bigint;
+  repayment_amount: bigint;
   duration_days: number;
   eligible: boolean;
 }

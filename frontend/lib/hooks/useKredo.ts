@@ -223,8 +223,8 @@ export function useRequestLoan() {
       durationDays,
     }: {
       borrowerAddress: string;
-      loanAmount: number;
-      collateralAmount: number;
+      loanAmount: bigint;
+      collateralAmount: bigint;
       durationDays: number;
     }) => {
       if (!contract) throw new Error("Contract not configured.");
@@ -278,7 +278,7 @@ export function useRepayLoan() {
       repaymentAmount,
     }: {
       loanId: string;
-      repaymentAmount: number;
+      repaymentAmount: bigint;
     }) => {
       if (!contract) throw new Error("Contract not configured.");
       if (!address) throw new Error("Wallet not connected.");
@@ -376,7 +376,7 @@ export function usePreviewLoanTerms() {
     durationDays,
   }: {
     borrowerAddress: string;
-    loanAmount: number;
+    loanAmount: bigint;
     durationDays: number;
   }) => {
     if (!contract) return null;

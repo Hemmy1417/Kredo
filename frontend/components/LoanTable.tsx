@@ -8,6 +8,7 @@ import { AddressDisplay } from "./AddressDisplay";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import type { Loan } from "@/lib/contracts/types";
+import { formatGen } from "@/lib/utils";
 
 export function LoanTable() {
   const contract = useKredoContract();
@@ -16,13 +17,13 @@ export function LoanTable() {
   const { repayLoan, isRepaying, repayingLoanId } = useRepayLoan();
   const { liquidateLoan, isLiquidating, liquidatingLoanId } = useLiquidateLoan();
 
-  const handleRepay = (loanId: string, repaymentAmount: number) => {
+  const handleRepay = (loanId: string, repaymentAmount: bigint) => {
     if (!address) {
       error("Please connect your wallet to repay loans");
       return;
     }
     const confirmed = confirm(
-      `Repay loan #${loanId}? Amount due: ${repaymentAmount}`
+      `Repay loan #${loanId}? Amount due: ${formatGen(repaymentAmount)} GEN`
     );
     if (confirmed) repayLoan({ loanId, repaymentAmount });
   };
@@ -149,7 +150,7 @@ interface LoanRowProps {
   currentAddress: string | null;
   isConnected: boolean;
   isWalletLoading: boolean;
-  onRepay: (loanId: string, repaymentAmount: number) => void;
+  onRepay: (loanId: string, repaymentAmount: bigint) => void;
   onLiquidate: (loanId: string) => void;
   isRepaying: boolean;
   isLiquidating: boolean;
@@ -220,17 +221,17 @@ function LoanRow({
       <td className="px-4 py-4">
         <div className="flex flex-col">
           <span className="text-sm font-semibold">
-            {loan.loan_amount?.toLocaleString()}
+            {formatGen(loan.loan_amount)} GEN
           </span>
           <span className="text-xs text-muted-foreground">
-            Repay: {loan.repayment_amount?.toLocaleString()}
+            Repay: {formatGen(loan.repayment_amount)} GEN
           </span>
         </div>
       </td>
       <td className="px-4 py-4">
         <div className="flex flex-col">
           <span className="text-sm">
-            {loan.collateral_amount?.toLocaleString()}
+            {formatGen(loan.collateral_amount)} GEN
           </span>
           <span className="text-xs text-muted-foreground">
             {collateralPct}% ratio

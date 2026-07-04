@@ -167,12 +167,12 @@ class Kredo {
    */
   async previewLoanTerms(
     borrowerAddress: string,
-    loanAmount: number,
+    loanAmountWei: bigint,
     durationDays: number
   ): Promise<any> {
     const raw = await this.safeRead("preview_loan_terms", [
       borrowerAddress,
-      loanAmount,
+      loanAmountWei,
       durationDays,
     ]);
     if (!raw) throw new Error("Failed to preview loan terms");
@@ -217,17 +217,19 @@ class Kredo {
 
   async requestLoan(
     borrowerAddress: string,
-    loanAmount: number,
-    collateralAmount: number,
+    loanAmountWei: bigint,
+    collateralAmountWei: bigint,
     durationDays: number
   ): Promise<TransactionReceipt> {
     try {
-      // Collateral moves as msg.value — the on-chain contract escrows this.
+      // Both loan and collateral amounts flow to the contract as wei-scale
+      // BigInts (the contract uses BPS math internally). msg.value moves real
+      // GEN and MetaMask displays it as "N GEN" instead of "N wei".
       const txHash = await this.client.writeContract({
         address: this.contractAddress,
         functionName: "request_loan",
-        args: [borrowerAddress, loanAmount, collateralAmount, durationDays],
-        value: BigInt(collateralAmount),
+        args: [borrowerAddress, loanAmountWei, collateralAmountWei, durationDays],
+        value: collateralAmountWei,
       });
       return await this.waitAndVerify(txHash);
     } catch (err) {
@@ -236,12 +238,12 @@ class Kredo {
     }
   }
 
-  async repayLoan(loanId: string, repaymentAmount: number): Promise<TransactionReceipt> {
+  async repayLoan(loanId: string, repaymentAmountWei: bigint): Promise<TransactionReceipt> {
     try {
       const txHash = await this.client.writeContract({
         address: this.contractAddress,
         functionName: "repay_loan",
-        args: [loanId, repaymentAmount],
+        args: [loanId, repaymentAmountWei],
         value: BigInt(0),
       });
       return await this.waitAndVerify(txHash);
