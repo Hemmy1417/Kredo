@@ -244,8 +244,8 @@ Respond ONLY with this JSON (no markdown, no extra text):
             "summary": result["summary"],
             "risk_tier": result["risk_tier"],
             "flags": result.get("flags", []),
-            "collateral_ratio": self._score_to_collateral_ratio(result["score"]),
-            "interest_rate_apr": self._score_to_interest_rate(result["score"]),
+            "collateral_ratio_bps": int(self._score_to_collateral_ratio(result["score"]) * 10000),
+            "interest_rate_bps": int(self._score_to_interest_rate(result["score"]) * 10000),
         }
 
     # ────────────────────────────────────────────────────────────────────────────
@@ -298,8 +298,8 @@ Respond ONLY with this JSON (no markdown, no extra text):
             "borrower": borrower_address,
             "loan_amount": loan_amount,
             "collateral_amount": collateral_amount,
-            "collateral_ratio": required_ratio,
-            "interest_rate_apr": apr,
+            "collateral_ratio_bps": int(required_ratio * 10000),
+            "interest_rate_bps": int(apr * 10000),
             "interest_amount": interest_amount,
             "repayment_amount": repayment_amount,
             "duration_days": duration_days,
@@ -315,8 +315,8 @@ Respond ONLY with this JSON (no markdown, no extra text):
             "loan_amount": loan_amount,
             "collateral_amount": collateral_amount,
             "required_collateral": required_collateral,
-            "collateral_ratio": required_ratio,
-            "interest_rate_apr": apr,
+            "collateral_ratio_bps": int(required_ratio * 10000),
+            "interest_rate_bps": int(apr * 10000),
             "interest_amount": interest_amount,
             "repayment_amount": repayment_amount,
             "duration_days": duration_days,
