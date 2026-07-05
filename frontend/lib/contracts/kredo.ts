@@ -233,7 +233,7 @@ class Kredo {
   async evaluateIdentity(
     borrowerAddress: string,
     identitySources: { type: string; url: string; label: string }[]
-  ): Promise<TransactionReceipt> {
+  ): Promise<{ receipt: TransactionReceipt; txHash: string }> {
     try {
       const txHash = await this.client.writeContract({
         address: this.contractAddress,
@@ -241,7 +241,8 @@ class Kredo {
         args: [borrowerAddress, identitySources],
         value: BigInt(0),
       });
-      return await this.waitAndVerify(txHash);
+      const receipt = await this.waitAndVerify(txHash);
+      return { receipt, txHash: String(txHash) };
     } catch (err) {
       console.error("[Kredo] evaluateIdentity failed:", err);
       throw err instanceof Error ? err : new Error("Failed to evaluate identity");
@@ -253,7 +254,7 @@ class Kredo {
     loanAmountWei: bigint,
     collateralAmountWei: bigint,
     durationDays: number
-  ): Promise<TransactionReceipt> {
+  ): Promise<{ receipt: TransactionReceipt; txHash: string }> {
     try {
       // Both loan and collateral amounts flow to the contract as wei-scale
       // BigInts (the contract uses BPS math internally). msg.value moves real
@@ -264,14 +265,15 @@ class Kredo {
         args: [borrowerAddress, loanAmountWei, collateralAmountWei, durationDays],
         value: collateralAmountWei,
       });
-      return await this.waitAndVerify(txHash);
+      const receipt = await this.waitAndVerify(txHash);
+      return { receipt, txHash: String(txHash) };
     } catch (err) {
       console.error("[Kredo] requestLoan failed:", err);
       throw err instanceof Error ? err : new Error("Failed to request loan");
     }
   }
 
-  async repayLoan(loanId: string, repaymentAmountWei: bigint): Promise<TransactionReceipt> {
+  async repayLoan(loanId: string, repaymentAmountWei: bigint): Promise<{ receipt: TransactionReceipt; txHash: string }> {
     try {
       const txHash = await this.client.writeContract({
         address: this.contractAddress,
@@ -279,14 +281,15 @@ class Kredo {
         args: [loanId, repaymentAmountWei],
         value: BigInt(0),
       });
-      return await this.waitAndVerify(txHash);
+      const receipt = await this.waitAndVerify(txHash);
+      return { receipt, txHash: String(txHash) };
     } catch (err) {
       console.error("[Kredo] repayLoan failed:", err);
       throw err instanceof Error ? err : new Error("Failed to repay loan");
     }
   }
 
-  async liquidateLoan(loanId: string): Promise<TransactionReceipt> {
+  async liquidateLoan(loanId: string): Promise<{ receipt: TransactionReceipt; txHash: string }> {
     try {
       const txHash = await this.client.writeContract({
         address: this.contractAddress,
@@ -294,7 +297,8 @@ class Kredo {
         args: [loanId],
         value: BigInt(0),
       });
-      return await this.waitAndVerify(txHash);
+      const receipt = await this.waitAndVerify(txHash);
+      return { receipt, txHash: String(txHash) };
     } catch (err) {
       console.error("[Kredo] liquidateLoan failed:", err);
       throw err instanceof Error ? err : new Error("Failed to liquidate loan");

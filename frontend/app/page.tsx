@@ -208,7 +208,15 @@ export default function HomePage() {
         <div className="max-w-7xl mx-auto px-4 md:px-6 lg:px-8">
           <div className="flex items-center justify-between flex-wrap gap-4">
             <span className="text-xs text-muted-foreground font-mono">
-              Kredo · Reputation-based Lending on GenLayer
+              Kredo · Reputation-based Lending on GenLayer ·{" "}
+              <a
+                href={`https://explorer-studio.genlayer.com/address/${process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ?? ""}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline hover:text-accent"
+              >
+                Verify on explorer ↗
+              </a>
             </span>
             <div className="flex items-center gap-6 text-sm text-muted-foreground">
               <a href="https://genlayer.com" target="_blank" rel="noopener noreferrer" className="hover:text-accent transition-colors">

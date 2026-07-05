@@ -3,7 +3,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import Kredo from "../contracts/kredo";
-import { getContractAddress, getStudioUrl } from "../genlayer/client";
+import { getContractAddress, getStudioUrl, explorerTxUrl } from "../genlayer/client";
 import { useWallet } from "../genlayer/wallet";
 import { success, error, configError } from "../utils/toast";
 import { useScoreEvents } from "./useScoreEvents";
@@ -206,9 +206,9 @@ export function useEvaluateIdentity() {
       if (!contract) throw new Error("Contract not configured.");
       if (!address) throw new Error("Wallet not connected.");
       setIsEvaluating(true);
-      const receipt = await contract.evaluateIdentity(borrowerAddress, identitySources);
+      const { receipt, txHash } = await contract.evaluateIdentity(borrowerAddress, identitySources);
       const payload = contract.parseReturnPayload(receipt);
-      return { receipt, payload, priorScore };
+      return { receipt, txHash, payload, priorScore };
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["reputation"] });
@@ -230,6 +230,7 @@ export function useEvaluateIdentity() {
       }
       success("Identity evaluated!", {
         description: `New score: ${payload?.score ?? "recorded on-chain"}`,
+        action: { label: "View on explorer", onClick: () => window.open(explorerTxUrl(data?.txHash), "_blank") },
       });
     },
     onError: (err: any) => {
@@ -279,12 +280,13 @@ export function useRequestLoan() {
         durationDays
       );
     },
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["loans"] });
       queryClient.invalidateQueries({ queryKey: ["protocolParams"] });
       setIsRequesting(false);
       success("Loan requested!", {
         description: "Your loan has been recorded on the blockchain.",
+        action: { label: "View on explorer", onClick: () => window.open(explorerTxUrl(data?.txHash), "_blank") },
       });
     },
     onError: (err: any) => {
@@ -329,9 +331,9 @@ export function useRepayLoan() {
       if (!address) throw new Error("Wallet not connected.");
       setIsRepaying(true);
       setRepayingLoanId(loanId);
-      const receipt = await contract.repayLoan(loanId, repaymentAmount);
+      const { receipt, txHash } = await contract.repayLoan(loanId, repaymentAmount);
       const payload = contract.parseReturnPayload(receipt);
-      return { receipt, payload, loanId, priorScore };
+      return { receipt, txHash, payload, loanId, priorScore };
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["loans"] });
@@ -354,6 +356,7 @@ export function useRepayLoan() {
       }
       success("Loan repaid!", {
         description: `Collateral refunded · reputation +${Number(payload?.score_boost ?? 0)}`,
+        action: { label: "View on explorer", onClick: () => window.open(explorerTxUrl(data?.txHash), "_blank") },
       });
     },
     onError: (err: any) => {
@@ -393,9 +396,9 @@ export function useLiquidateLoan() {
       if (!address) throw new Error("Wallet not connected.");
       setIsLiquidating(true);
       setLiquidatingLoanId(args.loanId);
-      const receipt = await contract.liquidateLoan(args.loanId);
+      const { receipt, txHash } = await contract.liquidateLoan(args.loanId);
       const payload = contract.parseReturnPayload(receipt);
-      return { receipt, payload, ...args };
+      return { receipt, txHash, payload, ...args };
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["loans"] });
@@ -418,6 +421,7 @@ export function useLiquidateLoan() {
       }
       success("Loan liquidated!", {
         description: `Bounty claimed · borrower penalised by ${Number(payload?.score_penalty ?? 0)}`,
+        action: { label: "View on explorer", onClick: () => window.open(explorerTxUrl(data?.txHash), "_blank") },
       });
     },
     onError: (err: any) => {
