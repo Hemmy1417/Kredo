@@ -85,9 +85,12 @@ Kredo/
 
 Set once you've deployed. Update this line and the CI env:
 
-- **Address:** `0x42600a355F3E465884099B1c9Ee6FA9c0abF734e`
+- **Address:** `0x15Ca18407211fe99D65A2c83E3C413aDd0C2e9A4`
+
+> **Payout fix (July 2026).** Wallet payouts are sent as EVM external messages (an empty `@gl.evm.contract_interface` proxy executed by the contract's ghost account). The previous GenVM-call pattern errored at finalization on plain wallets and stranded the value; the contract was redeployed at the address above with the corrected transfer path.
+
 - **Network:** GenLayer Studionet
-- **Open in Studio:** [GenLayer Studio](https://studio.genlayer.com/?import-contract=0x42600a355F3E465884099B1c9Ee6FA9c0abF734e)
+- **Open in Studio:** [GenLayer Studio](https://studio.genlayer.com/?import-contract=0x15Ca18407211fe99D65A2c83E3C413aDd0C2e9A4)
 
 ## Local development
 
