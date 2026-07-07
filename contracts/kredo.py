@@ -7,6 +7,18 @@ import json
 import typing
 
 
+# Empty EVM interface: paying a wallet is an external message through the
+# chain layer (executed by the IC's ghost contract), NOT a GenVM call —
+# gl.get_contract_at(...).emit_transfer at an EOA errors at finalization
+# and the value is stranded. Proven empirically on Curia round 1.
+@gl.evm.contract_interface
+class _Payee:
+    class View:
+        pass
+    class Write:
+        pass
+
+
 class Kredo(gl.Contract):
     """
     Identity-Linked Lending Protocol on GenLayer.
@@ -29,14 +41,14 @@ class Kredo(gl.Contract):
     loan_counter: u256
 
     # protocol owner (sets parameters, pauses, etc.)
-    owner: str
+    owner: Address
 
     # minimum reputation score required to borrow at all
     min_reputation_to_borrow: u256
 
     # ── constructor ─────────────────────────────────────────────────────────────
 
-    def __init__(self, owner: str, min_reputation_to_borrow: int):
+    def __init__(self, owner: Address, min_reputation_to_borrow: int):
         self.reputation_registry = TreeMap()
         self.loans = TreeMap()
         self.loan_counter = u256(0)
@@ -48,7 +60,7 @@ class Kredo(gl.Contract):
     # ────────────────────────────────────────────────────────────────────────────
 
     def _only_owner(self) -> None:
-        if gl.message.sender_account != self.owner:
+        if str(gl.message.sender_address).lower() != str(self.owner).lower():
             raise gl.vm.UserError("Only the contract owner can call this function")
 
     def _get_profile(self, address: str) -> typing.Any:
@@ -354,8 +366,7 @@ Respond ONLY with this JSON (no markdown, no extra text):
         # Refund the exact collateral that was escrowed.
         refund = int(loan["collateral_amount"])
         if refund > 0:
-            gl.get_contract_at(Address(loan["borrower"])).emit_transfer(
-                value=u256(refund), on="finalized"
+            _Payee(Address(loan["borrower"])).emit_transfer(value=u256(refund), on="finalized"
             )
 
         loan["status"] = "REPAID"
@@ -395,8 +406,7 @@ Respond ONLY with this JSON (no markdown, no extra text):
         liquidator = str(gl.message.sender_address)
         bounty = int(loan["collateral_amount"])
         if bounty > 0:
-            gl.get_contract_at(Address(liquidator)).emit_transfer(
-                value=u256(bounty), on="finalized"
+            _Payee(Address(liquidator)).emit_transfer(value=u256(bounty), on="finalized"
             )
 
         loan["status"] = "LIQUIDATED"
@@ -498,7 +508,7 @@ Respond ONLY with this JSON (no markdown, no extra text):
     def get_protocol_params(self) -> typing.Any:
         """Return current protocol parameters."""
         return {
-            "owner": self.owner,
+            "owner": str(self.owner),
             "min_reputation_to_borrow": int(self.min_reputation_to_borrow),
             "total_loans_issued": int(self.loan_counter),
         }
