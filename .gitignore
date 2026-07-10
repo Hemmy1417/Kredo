@@ -26,3 +26,6 @@ desktop.ini
 # logs / misc
 *.log
 coverage/
+
+# editor / local tooling
+.claude/

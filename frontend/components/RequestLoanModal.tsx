@@ -214,7 +214,7 @@ export function RequestLoanModal() {
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs text-muted-foreground">APR</p>
+                    <p className="text-xs text-muted-foreground">APR (effective)</p>
                     <p className="font-semibold">
                       {previewData.interest_rate_apr != null
                         ? `${(previewData.interest_rate_apr * 100).toFixed(1)}%`
@@ -235,11 +235,42 @@ export function RequestLoanModal() {
                       {formatGen(previewData.required_collateral)} GEN
                     </p>
                   </div>
+
+                  {/* Rate breakdown — shows why the APR is what it is */}
+                  {(previewData.utilization_premium_apr > 0 || previewData.experience_surcharge_apr > 0) && (
+                    <div className="col-span-2 rounded-lg bg-white/5 p-3 space-y-1 text-xs">
+                      <div className="flex justify-between text-muted-foreground">
+                        <span>Base rate (your score)</span>
+                        <span className="font-mono text-foreground">{(previewData.base_apr * 100).toFixed(1)}%</span>
+                      </div>
+                      {previewData.utilization_premium_apr > 0 && (
+                        <div className="flex justify-between text-muted-foreground">
+                          <span>Utilisation premium ({(previewData.utilization * 100).toFixed(0)}% pool)</span>
+                          <span className="font-mono text-orange-400">+{(previewData.utilization_premium_apr * 100).toFixed(1)}%</span>
+                        </div>
+                      )}
+                      {previewData.experience_surcharge_apr > 0 && (
+                        <div className="flex justify-between text-muted-foreground">
+                          <span>Prior-default surcharge</span>
+                          <span className="font-mono text-red-400">+{(previewData.experience_surcharge_apr * 100).toFixed(1)}%</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {!previewData.eligible && (
                     <div className="col-span-2">
                       <p className="text-xs text-destructive">
                         Your reputation score is too low to borrow. Verify your
                         identity first.
+                      </p>
+                    </div>
+                  )}
+                  {previewData.eligible && previewData.pool_can_fund === false && (
+                    <div className="col-span-2">
+                      <p className="text-xs text-destructive">
+                        The pool only has {formatGen(previewData.available_liquidity_wei)} GEN available —
+                        reduce the loan amount or add liquidity to the pool.
                       </p>
                     </div>
                   )}
@@ -292,7 +323,7 @@ export function RequestLoanModal() {
               type="submit"
               variant="gradient"
               className="flex-1"
-              disabled={isRequesting || previewData?.eligible === false}
+              disabled={isRequesting || previewData?.eligible === false || previewData?.pool_can_fund === false}
             >
               {isRequesting ? (
                 <>

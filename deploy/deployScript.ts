@@ -17,10 +17,11 @@ export default async function main(client: GenLayerClient<GenLayerChain>) {
 
     const deployTransaction = await client.deployContract({
       code: contractCode,
-      // Kredo's constructor takes: owner (str), min_reputation_to_borrow (int).
-      // Owner defaults to the deploying wallet at read time; set an initial
-      // minimum of 0 (any reputation can borrow with full collateral).
-      args: ["0x0000000000000000000000000000000000000000", 0],
+      // Kredo's constructor takes: owner (Address), min_reputation_to_borrow (int).
+      // IMPORTANT: owner MUST be a real wallet you control — liquidate_loan and
+      // withdraw_liquidity are owner-only keeper actions, so a zero/placeholder
+      // owner permanently bricks liquidations and pool withdrawals.
+      args: [client.account?.address ?? "0x0000000000000000000000000000000000000000", 20],
     });
     const receipt = await client.waitForTransactionReceipt({
       hash: deployTransaction as TransactionHash,

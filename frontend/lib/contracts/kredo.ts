@@ -210,11 +210,19 @@ class Kredo {
     ]);
     if (!raw) throw new Error("Failed to preview loan terms");
     const obj = this.toObj(raw);
-    // Convert bps back to decimals for the UI
+    // Convert bps back to decimals for the UI. interest_rate_bps here is the
+    // EFFECTIVE rate (base + utilization premium + default-record surcharge);
+    // the itemised components are surfaced so the UI can explain the price.
     return {
       ...obj,
       collateral_ratio: (Number(obj.collateral_ratio_bps ?? 15000)) / 10000,
       interest_rate_apr: (Number(obj.interest_rate_bps ?? 2000)) / 10000,
+      base_apr: (Number(obj.base_apr_bps ?? 2000)) / 10000,
+      utilization_premium_apr: (Number(obj.utilization_premium_bps ?? 0)) / 10000,
+      experience_surcharge_apr: (Number(obj.experience_surcharge_bps ?? 0)) / 10000,
+      utilization: (Number(obj.utilization_bps ?? 0)) / 10000,
+      pool_can_fund: Boolean(obj.pool_can_fund ?? false),
+      available_liquidity_wei: BigInt(obj.available_liquidity_wei ?? 0),
     };
   }
 
@@ -275,11 +283,13 @@ class Kredo {
 
   async repayLoan(loanId: string, repaymentAmountWei: bigint): Promise<{ receipt: TransactionReceipt; txHash: string }> {
     try {
+      // repay_loan is now payable: the borrower returns principal + interest as
+      // msg.value; the pool refunds the escrowed collateral in the same tx.
       const txHash = await this.client.writeContract({
         address: this.contractAddress,
         functionName: "repay_loan",
         args: [loanId, repaymentAmountWei],
-        value: BigInt(0),
+        value: repaymentAmountWei,
       });
       const receipt = await this.waitAndVerify(txHash);
       return { receipt, txHash: String(txHash) };
@@ -287,6 +297,54 @@ class Kredo {
       console.error("[Kredo] repayLoan failed:", err);
       throw err instanceof Error ? err : new Error("Failed to repay loan");
     }
+  }
+
+  /** Seed the lending pool with GEN (LP / owner). Value sent becomes lendable reserve. */
+  async depositLiquidity(amountWei: bigint): Promise<{ receipt: TransactionReceipt; txHash: string }> {
+    try {
+      const txHash = await this.client.writeContract({
+        address: this.contractAddress,
+        functionName: "deposit_liquidity",
+        args: [],
+        value: amountWei,
+      });
+      const receipt = await this.waitAndVerify(txHash);
+      return { receipt, txHash: String(txHash) };
+    } catch (err) {
+      console.error("[Kredo] depositLiquidity failed:", err);
+      throw err instanceof Error ? err : new Error("Failed to deposit liquidity");
+    }
+  }
+
+  /** Owner withdraws idle (un-lent) reserve from the pool. */
+  async withdrawLiquidity(amountWei: bigint): Promise<{ receipt: TransactionReceipt; txHash: string }> {
+    try {
+      const txHash = await this.client.writeContract({
+        address: this.contractAddress,
+        functionName: "withdraw_liquidity",
+        args: [amountWei],
+        value: BigInt(0),
+      });
+      const receipt = await this.waitAndVerify(txHash);
+      return { receipt, txHash: String(txHash) };
+    } catch (err) {
+      console.error("[Kredo] withdrawLiquidity failed:", err);
+      throw err instanceof Error ? err : new Error("Failed to withdraw liquidity");
+    }
+  }
+
+  /** Live solvency snapshot of the lending book. Safe defaults on fresh deploy. */
+  async getPoolStats(): Promise<any> {
+    const raw = await this.safeRead("get_pool_stats");
+    const obj = this.toObj(raw);
+    return {
+      liquidity_reserve_wei: BigInt(obj.liquidity_reserve_wei ?? 0),
+      outstanding_principal_wei: BigInt(obj.outstanding_principal_wei ?? 0),
+      total_book_wei: BigInt(obj.total_book_wei ?? 0),
+      utilization_bps: Number(obj.utilization_bps ?? 0),
+      lifetime_interest_wei: BigInt(obj.lifetime_interest_wei ?? 0),
+      lifetime_writeoff_wei: BigInt(obj.lifetime_writeoff_wei ?? 0),
+    };
   }
 
   async liquidateLoan(loanId: string): Promise<{ receipt: TransactionReceipt; txHash: string }> {

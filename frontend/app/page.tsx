@@ -5,6 +5,7 @@ import { LoanTable } from "@/components/LoanTable";
 import { ReputationPanel } from "@/components/ReputationPanel";
 import { YourScoreCard } from "@/components/YourScoreCard";
 import { ProtocolStatsStrip } from "@/components/ProtocolStatsStrip";
+import { LiquidityPanel } from "@/components/LiquidityPanel";
 import { NotificationsBanner } from "@/components/NotificationsBanner";
 import { ShieldCheck, Zap, TrendingUp, Lock } from "lucide-react";
 
@@ -12,8 +13,8 @@ const steps = [
   {
     number: "01",
     icon: ShieldCheck,
-    title: "Verify Identity",
-    body: "Submit identity signals — ENS, Gitcoin Passport, on-chain history, or a credit API. GenLayer's AI scores your reputation 0–100 via validator consensus.",
+    title: "Verify Your Wallet",
+    body: "One click, nothing to paste. The contract reads your wallet's own on-chain footprint — no one else can submit it or fake it. GenLayer's AI scores your reputation 0–100 via validator consensus.",
   },
   {
     number: "02",
@@ -99,6 +100,11 @@ export default function HomePage() {
           {/* ── Your reputation (only when connected) ── */}
           <section className="animate-fade-in">
             <YourScoreCard />
+          </section>
+
+          {/* ── Liquidity pool (real capital that funds loans) ── */}
+          <section className="animate-fade-in">
+            <LiquidityPanel />
           </section>
 
           {/* ── Loans ── */}

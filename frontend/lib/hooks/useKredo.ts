@@ -283,6 +283,7 @@ export function useRequestLoan() {
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["loans"] });
       queryClient.invalidateQueries({ queryKey: ["protocolParams"] });
+      queryClient.invalidateQueries({ queryKey: ["poolStats"] });
       setIsRequesting(false);
       success("Loan requested!", {
         description: "Your loan has been recorded on the blockchain.",
@@ -339,6 +340,7 @@ export function useRepayLoan() {
       queryClient.invalidateQueries({ queryKey: ["loans"] });
       queryClient.invalidateQueries({ queryKey: ["reputation"] });
       queryClient.invalidateQueries({ queryKey: ["topBorrowers"] });
+      queryClient.invalidateQueries({ queryKey: ["poolStats"] });
       setIsRepaying(false);
       setRepayingLoanId(null);
       const payload = data?.payload;
@@ -404,10 +406,11 @@ export function useLiquidateLoan() {
       queryClient.invalidateQueries({ queryKey: ["loans"] });
       queryClient.invalidateQueries({ queryKey: ["reputation"] });
       queryClient.invalidateQueries({ queryKey: ["topBorrowers"] });
+      queryClient.invalidateQueries({ queryKey: ["poolStats"] });
       setIsLiquidating(false);
       setLiquidatingLoanId(null);
-      // The event is recorded for the LIQUIDATOR's changelog (they just seized a bounty).
-      // The borrower's score drop is only surfaced to them next time they reload.
+      // Keeper write-off: the seized collateral returns to the pool reserve to
+      // offset the disbursed principal; any shortfall is booked as a write-off.
       const payload = data?.payload;
       if (address) {
         recordEvent({
@@ -415,12 +418,12 @@ export function useLiquidateLoan() {
           delta: 0,
           fromScore: 0,
           toScore: 0,
-          note: `Liquidated loan #${data.loanId} — bounty ${payload?.bounty_paid ?? 0} wei`,
+          note: `Liquidated loan #${data.loanId} — collateral ${payload?.seized_collateral ?? 0} wei returned to pool`,
           loanId: String(data.loanId),
         });
       }
       success("Loan liquidated!", {
-        description: `Bounty claimed · borrower penalised by ${Number(payload?.score_penalty ?? 0)}`,
+        description: `Collateral seized to pool · borrower penalised by ${Number(payload?.score_penalty ?? 0)}`,
         action: { label: "View on explorer", onClick: () => window.open(explorerTxUrl(data?.txHash), "_blank") },
       });
     },
@@ -473,4 +476,86 @@ export function usePreviewLoanTerms() {
   };
 
   return { preview, isFetching };
+}
+
+// ─── LIQUIDITY POOL HOOKS ────────────────────────────────────────────────────
+
+/**
+ * Live solvency snapshot of the lending book (reserve, outstanding, utilization,
+ * lifetime interest / write-offs). Safe zero defaults on a fresh deployment.
+ */
+export function usePoolStats() {
+  const contract = useKredoContract();
+
+  return useQuery({
+    queryKey: ["poolStats"],
+    queryFn: () => (contract ? contract.getPoolStats() : Promise.resolve(null)),
+    refetchOnWindowFocus: true,
+    staleTime: 5000,
+    enabled: !!contract,
+  });
+}
+
+/** Seed the lending pool with GEN (LP / owner). */
+export function useDepositLiquidity() {
+  const contract = useKredoContract();
+  const { address } = useWallet();
+  const queryClient = useQueryClient();
+  const [isDepositing, setIsDepositing] = useState(false);
+
+  const mutation = useMutation({
+    mutationFn: async ({ amount }: { amount: bigint }) => {
+      if (!contract) throw new Error("Contract not configured.");
+      if (!address) throw new Error("Wallet not connected.");
+      setIsDepositing(true);
+      return contract.depositLiquidity(amount);
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["poolStats"] });
+      queryClient.invalidateQueries({ queryKey: ["protocolParams"] });
+      setIsDepositing(false);
+      success("Liquidity deposited!", {
+        description: "The pool reserve grew — borrowers can now draw against it.",
+        action: { label: "View on explorer", onClick: () => window.open(explorerTxUrl(data?.txHash), "_blank") },
+      });
+    },
+    onError: (err: any) => {
+      setIsDepositing(false);
+      error("Failed to deposit liquidity", { description: err?.message || "Please try again." });
+    },
+  });
+
+  return { ...mutation, isDepositing, depositLiquidity: mutation.mutate, depositLiquidityAsync: mutation.mutateAsync };
+}
+
+/** Owner withdraws idle (un-lent) reserve from the pool. */
+export function useWithdrawLiquidity() {
+  const contract = useKredoContract();
+  const { address } = useWallet();
+  const queryClient = useQueryClient();
+  const [isWithdrawing, setIsWithdrawing] = useState(false);
+
+  const mutation = useMutation({
+    mutationFn: async ({ amount }: { amount: bigint }) => {
+      if (!contract) throw new Error("Contract not configured.");
+      if (!address) throw new Error("Wallet not connected.");
+      setIsWithdrawing(true);
+      return contract.withdrawLiquidity(amount);
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["poolStats"] });
+      queryClient.invalidateQueries({ queryKey: ["protocolParams"] });
+      setIsWithdrawing(false);
+      success("Liquidity withdrawn!", {
+        description: "Idle reserve returned to your wallet.",
+        action: { label: "View on explorer", onClick: () => window.open(explorerTxUrl(data?.txHash), "_blank") },
+      });
+    },
+    onError: (err: any) => {
+      setIsWithdrawing(false);
+      error("Failed to withdraw liquidity", { description: err?.message || "Please try again." });
+    },
+  });
+
+  return { ...mutation, isWithdrawing, withdrawLiquidity: mutation.mutate, withdrawLiquidityAsync: mutation.mutateAsync };
 }

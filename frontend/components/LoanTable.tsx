@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Loader2, Landmark, Clock, AlertCircle, CheckCircle2, XCircle, ShieldCheck } from "lucide-react";
-import { useLoans, useRepayLoan, useLiquidateLoan, useKredoContract, useReputation } from "@/lib/hooks/useKredo";
+import { useLoans, useRepayLoan, useLiquidateLoan, useKredoContract, useReputation, useProtocolParams } from "@/lib/hooks/useKredo";
 import { useLoanTimestamps, computeLoanClock, timeAgo } from "@/lib/hooks/useLoanTimestamps";
 import { useWallet } from "@/lib/genlayer/wallet";
 import { error } from "@/lib/utils/toast";
@@ -21,7 +21,15 @@ export function LoanTable() {
   const { repayLoan, isRepaying, repayingLoanId } = useRepayLoan();
   const { liquidateLoan, isLiquidating, liquidatingLoanId } = useLiquidateLoan();
   const { data: reputation } = useReputation(address);
+  const { data: params } = useProtocolParams();
   const timestamps = useLoanTimestamps(loans);
+
+  // Liquidation is a keeper action: owner-only on the contract, so only the
+  // owner sees the button (anyone else's tx would just revert on-chain).
+  const isOwner =
+    !!address &&
+    !!params?.owner &&
+    String(params.owner).toLowerCase() === address.toLowerCase();
   const [filter, setFilter] = useState<"all" | "active" | "repaid" | "liquidated" | "mine">("all");
 
   const filtered = useMemo(() => {
@@ -76,7 +84,8 @@ export function LoanTable() {
     }
     const confirmed = confirm(
       `Liquidate loan #${loan.loan_id}?\n\n` +
-      `You keep the escrowed collateral (${formatGen(loan.collateral_amount)} GEN) as bounty.\n` +
+      `The escrowed collateral (${formatGen(loan.collateral_amount)} GEN) is seized into the pool reserve; ` +
+      `any shortfall vs the disbursed principal is booked as a write-off.\n` +
       `The borrower's reputation score drops by up to 20 points.`
     );
     if (confirmed) liquidateLoan({
@@ -210,6 +219,7 @@ export function LoanTable() {
                 currentAddress={address}
                 isConnected={isConnected}
                 isWalletLoading={isWalletLoading}
+                isOwner={isOwner}
                 onRepay={handleRepay}
                 onLiquidate={handleLiquidate}
                 isRepaying={isRepaying && repayingLoanId === loan.loan_id}
@@ -233,6 +243,7 @@ interface LoanRowProps {
   currentAddress: string | null;
   isConnected: boolean;
   isWalletLoading: boolean;
+  isOwner: boolean;
   onRepay: (loan: Loan) => void;
   onLiquidate: (loan: Loan) => void;
   isRepaying: boolean;
@@ -294,6 +305,7 @@ function LoanRow({
   currentAddress,
   isConnected,
   isWalletLoading,
+  isOwner,
   onRepay,
   onLiquidate,
   isRepaying,
@@ -303,7 +315,10 @@ function LoanRow({
     currentAddress?.toLowerCase() === loan.borrower?.toLowerCase();
   const isActive = loan.status === "ACTIVE";
   const canRepay = isConnected && isBorrower && isActive && !isWalletLoading;
-  const canLiquidate = isConnected && !isBorrower && isActive && !isWalletLoading;
+  // Owner-only keeper action (the contract enforces it; anyone else would
+  // revert). The owner may liquidate their own loan too — collateral goes to
+  // the pool reserve, not to the caller, so there's no self-dealing.
+  const canLiquidate = isConnected && isOwner && isActive && !isWalletLoading;
 
   const aprPercent = ((loan.interest_rate_apr ?? 0) * 100).toFixed(1);
   const collateralPct = ((loan.collateral_ratio ?? 0) * 100).toFixed(0);
