@@ -357,13 +357,39 @@ def test_price_loan_combines_all_three_dimensions(module, contract):
     assert quote["interest_amount"] == GEN * 1400 // 10000
 
 
-# ── Liquidity pool ───────────────────────────────────────────────────────────
+# ── Liquidity pool: LP share registry, yield, open withdrawals ───────────────
 
-def test_deposit_liquidity_grows_reserve(module, contract):
-    _as(module, OWNER, 5 * GEN)
+LP_A = "0x3333333333333333333333333333333333333333"
+LP_B = "0x4444444444444444444444444444444444444444"
+
+
+def _deposit(module, contract, who, amount):
+    _as(module, who, amount)
     out = contract.deposit_liquidity()
+    _as(module, who, 0)
+    return out
+
+
+def _repaid_cycle(module, contract, loan_amount=2 * GEN):
+    """Open a loan and repay it; returns the repay payload (fee split etc.)."""
+    loan, _ = _open_loan(module, contract, score=90, loan=loan_amount)
+    _as(module, BORROWER, loan["repayment_amount"])
+    out = contract.repay_loan(loan["loan_id"], loan["repayment_amount"])
+    _as(module, BORROWER, 0)
+    return out
+
+
+def test_first_deposit_mints_shares_one_to_one(module, contract):
+    out = _deposit(module, contract, LP_A, 5 * GEN)
+    assert out["shares_minted"] == 5 * GEN
+    assert out["my_shares"] == 5 * GEN
+    assert out["total_lp_shares"] == 5 * GEN
     assert out["liquidity_reserve_wei"] == 5 * GEN
-    assert contract.get_pool_stats()["liquidity_reserve_wei"] == 5 * GEN
+    pos = contract.get_lp_position(LP_A)
+    assert pos["share_of_pool_bps"] == 10000
+    assert pos["current_value_wei"] == 5 * GEN
+    assert pos["net_deposited_wei"] == 5 * GEN
+    assert pos["earned_yield_wei"] == 0
 
 
 def test_deposit_rejects_zero(module, contract):
@@ -372,32 +398,130 @@ def test_deposit_rejects_zero(module, contract):
         contract.deposit_liquidity()
 
 
-def test_withdraw_only_owner(module, contract):
-    _fund(module, contract, 5 * GEN)
-    _as(module, LIQUIDATOR, 0)
-    with pytest.raises(module.gl.vm.UserError, match="owner"):
+def test_second_deposit_mints_proportional_shares(module, contract):
+    _deposit(module, contract, LP_A, 3 * GEN)
+    _deposit(module, contract, LP_B, GEN)
+    assert contract.get_lp_position(LP_A)["share_of_pool_bps"] == 7500
+    assert contract.get_lp_position(LP_B)["share_of_pool_bps"] == 2500
+    # a deposit at par neither dilutes nor enriches anyone
+    assert contract.get_lp_position(LP_A)["current_value_wei"] == 3 * GEN
+    assert contract.get_lp_position(LP_B)["current_value_wei"] == GEN
+
+
+def test_repaid_interest_accrues_to_all_lps_proportionally(module, contract):
+    _deposit(module, contract, LP_A, 3 * GEN)
+    _deposit(module, contract, LP_B, GEN)
+    out = _repaid_cycle(module, contract)
+    lp_interest = out["interest_to_lps"]
+    assert lp_interest > 0
+
+    assets = 4 * GEN + lp_interest        # pool assets after the cycle
+    pos_a = contract.get_lp_position(LP_A)
+    pos_b = contract.get_lp_position(LP_B)
+    assert pos_a["current_value_wei"] == (3 * GEN * assets) // (4 * GEN)
+    assert pos_b["current_value_wei"] == (GEN * assets) // (4 * GEN)
+    assert pos_a["earned_yield_wei"] == pos_a["current_value_wei"] - 3 * GEN
+    assert pos_b["earned_yield_wei"] == pos_b["current_value_wei"] - GEN
+    # 75/25 ownership → 75/25 yield (± integer rounding)
+    assert abs(pos_a["earned_yield_wei"] - 3 * pos_b["earned_yield_wei"]) <= 3
+    # share price rose above par for everyone
+    assert contract.get_pool_stats()["share_price_wad"] > 10 ** 18
+
+
+def test_withdraw_pays_principal_plus_yield_to_any_lp(module, contract):
+    _deposit(module, contract, LP_A, 3 * GEN)
+    _deposit(module, contract, LP_B, GEN)
+    out = _repaid_cycle(module, contract)
+    value_b = contract.get_lp_position(LP_B)["current_value_wei"]
+    assert value_b > GEN                 # principal + accrued yield
+
+    _as(module, LP_B, 0)
+    res = contract.withdraw_liquidity(GEN)   # burn all of LP_B's shares
+    assert res["withdrawn_wei"] == value_b
+    assert res["my_shares"] == 0
+    assert module.gl._emit.total_to(LP_B) == value_b
+    # LP_A's slice is untouched by LP_B's exit
+    assert contract.get_lp_position(LP_A)["share_of_pool_bps"] == 10000
+    assert contract.get_lp_position(LP_A)["current_value_wei"] >= 3 * GEN
+
+
+def test_withdraw_without_deposit_rejected_even_for_owner(module, contract):
+    _deposit(module, contract, LP_A, 5 * GEN)
+    _as(module, OWNER, 0)                # owner never deposited → no claim
+    with pytest.raises(module.gl.vm.UserError, match="no active deposit"):
         contract.withdraw_liquidity(GEN)
 
 
-def test_withdraw_pays_owner_address_object(module, contract):
-    # regression: self.owner is an Address; _Payee(Address(self.owner)) crashed
-    # on GenVM ("cannot convert 'Address' object to bytes") — withdraw must
-    # pass the Address through untouched and the transfer must land
-    _fund(module, contract, 5 * GEN)
-    _as(module, OWNER, 0)
-    out = contract.withdraw_liquidity(2 * GEN)
-    assert out["liquidity_reserve_wei"] == 3 * GEN
-    assert module.gl._emit.total_to(OWNER) == 2 * GEN
+def test_withdraw_more_shares_than_owned_rejected(module, contract):
+    _deposit(module, contract, LP_A, GEN)
+    _as(module, LP_A, 0)
+    with pytest.raises(module.gl.vm.UserError, match="holds"):
+        contract.withdraw_liquidity(2 * GEN)
 
 
 def test_withdraw_only_idle_reserve(module, contract):
-    _fund(module, contract, 5 * GEN)
-    _open_loan(module, contract, score=90, loan=3 * GEN)   # 3 GEN now outstanding, 2 idle
-    _as(module, OWNER, 0)
+    _deposit(module, contract, LP_A, 5 * GEN)
+    _open_loan(module, contract, score=90, loan=3 * GEN)   # 3 GEN out, 2 idle
+    _as(module, LP_A, 0)
     with pytest.raises(module.gl.vm.UserError, match="idle"):
-        contract.withdraw_liquidity(4 * GEN)               # only 2 idle
-    out = contract.withdraw_liquidity(2 * GEN)
+        contract.withdraw_liquidity(4 * GEN)               # slice worth > 2 idle
+    out = contract.withdraw_liquidity(2 * GEN)             # partial exit is fine
     assert out["liquidity_reserve_wei"] == 0
+
+
+def test_protocol_fee_accrues_and_only_owner_claims(module, contract):
+    _deposit(module, contract, LP_A, 4 * GEN)
+    out = _repaid_cycle(module, contract)
+    fee = out["protocol_fee"]
+    assert fee > 0
+    assert out["interest_to_lps"] + fee == out["interest_booked"]
+    assert contract.get_pool_stats()["protocol_fee_accrued_wei"] == fee
+
+    _as(module, LP_A, 0)
+    with pytest.raises(module.gl.vm.UserError, match="owner"):
+        contract.claim_protocol_fees()
+
+    # regression guard: self.owner is an Address; _Payee(self.owner) must pass
+    # it through untouched (re-wrapping crashes on GenVM) and the transfer lands
+    _as(module, OWNER, 0)
+    res = contract.claim_protocol_fees()
+    assert res["claimed_fees_wei"] == fee
+    assert module.gl._emit.total_to(OWNER) == fee
+    assert contract.get_pool_stats()["protocol_fee_accrued_wei"] == 0
+    with pytest.raises(module.gl.vm.UserError, match="no protocol fees"):
+        contract.claim_protocol_fees()
+
+
+def test_liquidation_loss_is_socialized_across_shares(module, contract):
+    _deposit(module, contract, LP_A, 10 * GEN)
+    loan, collateral = _open_loan(module, contract, score=90, loan=2 * GEN)
+    _as(module, OWNER, 0)
+    contract.liquidate_loan(loan["loan_id"])
+    # score 90 → 70 % collateral: pool ate a 0.6 GEN shortfall
+    shortfall = 2 * GEN - collateral
+    pos = contract.get_lp_position(LP_A)
+    assert pos["current_value_wei"] == 10 * GEN - shortfall
+    assert pos["earned_yield_wei"] == -shortfall
+    assert contract.get_pool_stats()["share_price_wad"] < 10 ** 18
+
+
+def test_full_exit_resets_share_price_to_par(module, contract):
+    _deposit(module, contract, LP_A, 2 * GEN)
+    _repaid_cycle(module, contract, loan_amount=GEN)
+    _as(module, LP_A, 0)
+    contract.withdraw_liquidity(2 * GEN)                   # burn everything
+    assert contract.get_pool_stats()["total_lp_shares"] == 0
+    # residual rounding dust may sit in the reserve; a fresh deposit is 1:1
+    out = _deposit(module, contract, LP_B, GEN)
+    assert out["shares_minted"] == GEN
+
+
+def test_deposit_too_small_to_mint_a_share_rejected(module, contract):
+    _deposit(module, contract, LP_A, 4 * GEN)
+    _repaid_cycle(module, contract)                        # share price now > 1
+    _as(module, LP_B, 1)                                   # 1 wei mints 0 shares
+    with pytest.raises(module.gl.vm.UserError, match="too small"):
+        contract.deposit_liquidity()
 
 
 # ── Loan lifecycle ───────────────────────────────────────────────────────────
@@ -483,8 +607,12 @@ def test_repay_returns_principal_plus_interest_and_refunds_collateral(module, co
     assert out["collateral_refunded"] == required
     stats = contract.get_pool_stats()
     assert stats["outstanding_principal_wei"] == 0
-    # reserve back to 10 GEN principal + the interest booked as profit
-    assert stats["liquidity_reserve_wei"] == 10 * GEN + loan["interest_amount"]
+    # reserve back to 10 GEN + the LP slice of interest; the fee sits apart
+    fee = loan["interest_amount"] * 1000 // 10000
+    assert out["protocol_fee"] == fee
+    assert out["interest_to_lps"] == loan["interest_amount"] - fee
+    assert stats["liquidity_reserve_wei"] == 10 * GEN + loan["interest_amount"] - fee
+    assert stats["protocol_fee_accrued_wei"] == fee
     assert stats["lifetime_interest_wei"] == loan["interest_amount"]
     assert contract.get_reputation(BORROWER)["total_loans_repaid"] == 1
 

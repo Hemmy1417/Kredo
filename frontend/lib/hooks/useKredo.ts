@@ -513,9 +513,10 @@ export function useDepositLiquidity() {
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["poolStats"] });
       queryClient.invalidateQueries({ queryKey: ["protocolParams"] });
+      queryClient.invalidateQueries({ queryKey: ["lpPosition"] });
       setIsDepositing(false);
       success("Liquidity deposited!", {
-        description: "The pool reserve grew — borrowers can now draw against it.",
+        description: "You now hold pool shares — repaid interest accrues to them automatically.",
         action: { label: "View on explorer", onClick: () => window.open(explorerTxUrl(data?.txHash), "_blank") },
       });
     },
@@ -528,7 +529,7 @@ export function useDepositLiquidity() {
   return { ...mutation, isDepositing, depositLiquidity: mutation.mutate, depositLiquidityAsync: mutation.mutateAsync };
 }
 
-/** Owner withdraws idle (un-lent) reserve from the pool. */
+/** Any LP burns pool shares for their pro-rata slice (principal + yield). */
 export function useWithdrawLiquidity() {
   const contract = useKredoContract();
   const { address } = useWallet();
@@ -536,18 +537,19 @@ export function useWithdrawLiquidity() {
   const [isWithdrawing, setIsWithdrawing] = useState(false);
 
   const mutation = useMutation({
-    mutationFn: async ({ amount }: { amount: bigint }) => {
+    mutationFn: async ({ shares }: { shares: bigint }) => {
       if (!contract) throw new Error("Contract not configured.");
       if (!address) throw new Error("Wallet not connected.");
       setIsWithdrawing(true);
-      return contract.withdrawLiquidity(amount);
+      return contract.withdrawLiquidity(shares);
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["poolStats"] });
       queryClient.invalidateQueries({ queryKey: ["protocolParams"] });
+      queryClient.invalidateQueries({ queryKey: ["lpPosition"] });
       setIsWithdrawing(false);
       success("Liquidity withdrawn!", {
-        description: "Idle reserve returned to your wallet.",
+        description: "Your shares were redeemed — principal plus earned yield returned to your wallet.",
         action: { label: "View on explorer", onClick: () => window.open(explorerTxUrl(data?.txHash), "_blank") },
       });
     },
@@ -558,4 +560,46 @@ export function useWithdrawLiquidity() {
   });
 
   return { ...mutation, isWithdrawing, withdrawLiquidity: mutation.mutate, withdrawLiquidityAsync: mutation.mutateAsync };
+}
+
+/** Owner collects the accrued protocol fee on interest. */
+export function useClaimProtocolFees() {
+  const contract = useKredoContract();
+  const queryClient = useQueryClient();
+  const [isClaiming, setIsClaiming] = useState(false);
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      if (!contract) throw new Error("Contract not configured.");
+      setIsClaiming(true);
+      return contract.claimProtocolFees();
+    },
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["poolStats"] });
+      setIsClaiming(false);
+      success("Protocol fees claimed!", {
+        action: { label: "View on explorer", onClick: () => window.open(explorerTxUrl(data?.txHash), "_blank") },
+      });
+    },
+    onError: (err: any) => {
+      setIsClaiming(false);
+      error("Failed to claim fees", { description: err?.message || "Please try again." });
+    },
+  });
+
+  return { ...mutation, isClaiming, claimProtocolFees: mutation.mutate };
+}
+
+/** The connected wallet's LP position: shares, value, earned yield. */
+export function useLpPosition() {
+  const contract = useKredoContract();
+  const { address } = useWallet();
+
+  return useQuery({
+    queryKey: ["lpPosition", address?.toLowerCase()],
+    queryFn: () =>
+      contract && address ? contract.getLpPosition(address) : Promise.resolve(null),
+    staleTime: 5000,
+    enabled: !!contract && !!address,
+  });
 }

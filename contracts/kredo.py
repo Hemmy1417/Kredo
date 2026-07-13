@@ -1,10 +1,14 @@
-# v0.2.0
+# v0.3.0
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 
 from genlayer import *
 
 import json
 import typing
+
+# Slice of loan interest kept as protocol revenue; the rest accrues to LP
+# shares. 1000 bps = 10 %.
+PROTOCOL_FEE_BPS = 1000
 
 
 # Empty EVM interface: paying a wallet is an external message through the
@@ -31,6 +35,15 @@ class Kredo(gl.Contract):
     their terms. Pricing is dynamic: base rate from score, plus a utilization
     premium when the pool runs hot, plus a record loading on prior defaulters.
     The pool tracks its whole in-force book and refuses loans it cannot fund.
+
+    LP SHARE MODEL (vault-style). Every deposit mints pool shares at the
+    current share price; shares are a proportional claim on the pool's assets
+    (idle reserve + principal out on active loans). Repaid interest raises
+    pool assets while shares stay constant, so yield accrues to every LP
+    pro-rata and automatically; write-offs socialize losses the same way.
+    Any share-holder can withdraw their slice of the idle reserve at any time
+    — capital out on loans returns as borrowers repay. A 10 % protocol fee on
+    interest is the only revenue that does NOT belong to LPs.
     """
 
     # ── persistent state ────────────────────────────────────────────────────────
@@ -64,6 +77,21 @@ class Kredo(gl.Contract):
     # lifetime principal the pool wrote off on liquidated defaults (wei)
     lifetime_writeoff_wei: u256
 
+    # ── LP share registry (who owns the pool) ───────────────────────────────────
+
+    # pool shares per depositor  {address_str -> shares (str int)}
+    lp_shares: TreeMap[str, str]
+
+    # total shares in existence — pool assets / total shares = share price
+    total_lp_shares: u256
+
+    # lifetime net deposits per LP  {address_str -> wei (str int)} — the cost
+    # basis used to report each LP's earned yield (current value − basis)
+    lp_net_deposit_wei: TreeMap[str, str]
+
+    # interest kept as protocol revenue, owner-claimable (NOT LP-owned)
+    protocol_fee_accrued_wei: u256
+
     # ── constructor ─────────────────────────────────────────────────────────────
 
     def __init__(self, owner: Address, min_reputation_to_borrow: int):
@@ -76,6 +104,10 @@ class Kredo(gl.Contract):
         self.outstanding_principal_wei = u256(0)
         self.lifetime_interest_wei = u256(0)
         self.lifetime_writeoff_wei = u256(0)
+        self.lp_shares = TreeMap()
+        self.total_lp_shares = u256(0)
+        self.lp_net_deposit_wei = TreeMap()
+        self.protocol_fee_accrued_wei = u256(0)
 
     # ────────────────────────────────────────────────────────────────────────────
     # INTERNAL HELPERS
@@ -85,7 +117,7 @@ class Kredo(gl.Contract):
         # Normalise both sides the same way every other address is handled, and
         # FAIL CLOSED: if the stored owner is somehow blank/malformed, nobody
         # passes (an empty owner must never match an empty sender). Gates
-        # override_score, set_min_reputation, withdraw_liquidity, liquidate_loan.
+        # override_score, set_min_reputation, claim_protocol_fees, liquidate_loan.
         owner = self._norm_addr(self.owner)
         sender = self._norm_addr(gl.message.sender_address)
         if not owner or sender != owner:
@@ -131,6 +163,31 @@ class Kredo(gl.Contract):
 
     def _save_loan(self, loan: dict) -> None:
         self.loans[loan["loan_id"]] = json.dumps(loan)
+
+    def _pool_assets(self) -> int:
+        """
+        Everything the LP shares are a claim on: idle reserve PLUS principal
+        currently out on active loans (lent-out money is still LP capital).
+        Accrued protocol fees are deliberately excluded — they belong to the
+        protocol, not the pool. Because this is internal bookkeeping (never a
+        balance read), a donation straight to the contract address cannot
+        skew the share price (the classic vault inflation attack has no lever).
+        """
+        return int(self.liquidity_reserve_wei) + int(self.outstanding_principal_wei)
+
+    def _lp_shares_of(self, address: str) -> int:
+        raw = self.lp_shares.get(self._norm_addr(address))
+        return int(raw) if raw else 0
+
+    def _set_lp_shares(self, address: str, shares: int) -> None:
+        self.lp_shares[self._norm_addr(address)] = str(max(0, int(shares)))
+
+    def _lp_basis_of(self, address: str) -> int:
+        raw = self.lp_net_deposit_wei.get(self._norm_addr(address))
+        return int(raw) if raw else 0
+
+    def _set_lp_basis(self, address: str, wei: int) -> None:
+        self.lp_net_deposit_wei[self._norm_addr(address)] = str(max(0, int(wei)))
 
     def _canonical_footprint(self, address: str) -> list:
         """
@@ -270,41 +327,119 @@ class Kredo(gl.Contract):
 
     @gl.public.write.payable
     def deposit_liquidity(self) -> typing.Any:
-        """Add GEN to the lending reserve. The value sent becomes lendable capital."""
+        """
+        Deposit GEN and receive pool shares at the current share price. The
+        first deposit mints 1:1; after that, shares = amount × total_shares /
+        pool_assets, so a deposit never dilutes or enriches existing LPs —
+        every share is always worth exactly its pro-rata slice of the pool.
+        """
+        sender = self._norm_addr(gl.message.sender_address)
         amount = int(gl.message.value)
         if amount <= 0:
             raise gl.vm.UserError("Must send a positive amount of GEN to deposit")
+
+        total_shares = int(self.total_lp_shares)
+        assets = self._pool_assets()
+        if total_shares == 0:
+            shares = amount   # bootstrap (and re-bootstrap after a full exit)
+        elif assets <= 0:
+            # Shares exist but the book was fully written off: any mint ratio
+            # would be arbitrary. Fail closed rather than misprice.
+            raise gl.vm.UserError(
+                "pool has outstanding shares but zero assets (fully written "
+                "off) — deposits are closed"
+            )
+        else:
+            shares = (amount * total_shares) // assets
+            if shares <= 0:
+                raise gl.vm.UserError(
+                    "deposit too small to mint a share at the current share price"
+                )
+
         self.liquidity_reserve_wei = u256(int(self.liquidity_reserve_wei) + amount)
+        self.total_lp_shares = u256(total_shares + shares)
+        self._set_lp_shares(sender, self._lp_shares_of(sender) + shares)
+        self._set_lp_basis(sender, self._lp_basis_of(sender) + amount)
+
         return {
             "deposited": amount,
+            "shares_minted": shares,
+            "my_shares": self._lp_shares_of(sender),
+            "total_lp_shares": int(self.total_lp_shares),
             "liquidity_reserve_wei": int(self.liquidity_reserve_wei),
         }
 
     @gl.public.write
-    def withdraw_liquidity(self, amount: int) -> typing.Any:
+    def withdraw_liquidity(self, shares_to_burn: int) -> typing.Any:
         """
-        Owner pulls idle capital from the reserve. Only the *idle* reserve can
-        leave — principal already out on loans is untouchable, so an in-flight
-        book can never be drained out from under borrowers.
+        Burn pool shares and receive their pro-rata slice of pool assets —
+        principal plus every wei of yield those shares have accrued. Open to
+        ANY share-holder; the owner has no special claim. Only the *idle*
+        reserve can leave — capital out on active loans is untouchable until
+        borrowers repay, so the in-force book can never be drained. If the
+        idle reserve can't cover the full slice, withdraw fewer shares now
+        and the rest as repayments come in.
         """
-        self._only_owner()
-        amount = int(amount)
-        reserve = int(self.liquidity_reserve_wei)
-        if amount <= 0:
-            raise gl.vm.UserError("Withdraw amount must be positive")
-        if amount > reserve:
+        sender = self._norm_addr(gl.message.sender_address)
+        shares_to_burn = int(shares_to_burn)
+        my_shares = self._lp_shares_of(sender)
+
+        if shares_to_burn <= 0:
+            raise gl.vm.UserError("shares_to_burn must be positive")
+        if my_shares <= 0:
+            raise gl.vm.UserError("no active deposit — this address holds no pool shares")
+        if shares_to_burn > my_shares:
             raise gl.vm.UserError(
-                f"Cannot withdraw {amount} wei; only {reserve} wei is idle "
-                f"(the rest is out on active loans)"
+                f"cannot burn {shares_to_burn} shares; this address holds {my_shares}"
             )
-        self.liquidity_reserve_wei = u256(reserve - amount)
-        # self.owner is already an Address — re-wrapping raises
-        # "TypeError: cannot convert 'Address' object to bytes" on GenVM.
-        _Payee(self.owner).emit_transfer(value=u256(amount), on="finalized")
+
+        total_shares = int(self.total_lp_shares)
+        assets = self._pool_assets()
+        assets_out = (shares_to_burn * assets) // total_shares
+        if assets_out <= 0:
+            raise gl.vm.UserError("those shares are currently worth zero — nothing to withdraw")
+
+        reserve = int(self.liquidity_reserve_wei)
+        if assets_out > reserve:
+            raise gl.vm.UserError(
+                f"withdrawal of {assets_out} wei exceeds the idle reserve "
+                f"({reserve} wei); the rest is out on active loans — burn "
+                f"fewer shares or wait for repayments"
+            )
+
+        # Reduce the cost basis in proportion to the shares leaving, so the
+        # remaining position still reports honest earned-yield numbers.
+        basis = self._lp_basis_of(sender)
+        basis_out = (basis * shares_to_burn) // my_shares
+
+        self._set_lp_shares(sender, my_shares - shares_to_burn)
+        self._set_lp_basis(sender, basis - basis_out)
+        self.total_lp_shares = u256(total_shares - shares_to_burn)
+        self.liquidity_reserve_wei = u256(reserve - assets_out)
+
+        _Payee(Address(sender)).emit_transfer(value=u256(assets_out), on="finalized")
+
         return {
-            "withdrawn": amount,
+            "shares_burned": shares_to_burn,
+            "withdrawn_wei": assets_out,
+            "my_shares": self._lp_shares_of(sender),
+            "total_lp_shares": int(self.total_lp_shares),
             "liquidity_reserve_wei": int(self.liquidity_reserve_wei),
         }
+
+    @gl.public.write
+    def claim_protocol_fees(self) -> typing.Any:
+        """Owner collects accrued protocol revenue (the 10 % interest fee).
+        This is the ONLY pot the owner can withdraw — LP capital is not it."""
+        self._only_owner()
+        fees = int(self.protocol_fee_accrued_wei)
+        if fees <= 0:
+            raise gl.vm.UserError("no protocol fees accrued")
+        self.protocol_fee_accrued_wei = u256(0)
+        # self.owner is already an Address — re-wrapping raises
+        # "TypeError: cannot convert 'Address' object to bytes" on GenVM.
+        _Payee(self.owner).emit_transfer(value=u256(fees), on="finalized")
+        return {"claimed_fees_wei": fees}
 
     # ────────────────────────────────────────────────────────────────────────────
     # REPUTATION  (AI-powered, reads real-world data)
@@ -574,8 +709,9 @@ Respond ONLY with this JSON (no markdown, no extra text):
         """
         Close a loan cleanly. The borrower returns principal + interest via
         `gl.message.value`; the pool refunds the escrowed collateral (plus any
-        overpayment) and books the interest as profit. Only the borrower may
-        repay. Reputation is boosted on a clean repayment.
+        overpayment). 90 % of the interest accrues to LP shares (raising the
+        share price for every depositor pro-rata); 10 % is protocol fee. Only
+        the borrower may repay. Reputation is boosted on a clean repayment.
         """
         loan = self._get_loan(loan_id)
 
@@ -600,8 +736,18 @@ Respond ONLY with this JSON (no markdown, no extra text):
         collateral = int(loan["collateral_amount"])
         overpay = paid - due
 
-        # Principal returns to the reserve, interest is booked as pool profit.
-        self.liquidity_reserve_wei = u256(int(self.liquidity_reserve_wei) + principal + interest)
+        # Principal returns to the reserve. Interest is split: the protocol
+        # keeps a fee, the rest lands in the reserve — which raises the value
+        # of every LP share proportionally (shares outstanding don't change),
+        # so this line IS the yield distribution.
+        protocol_fee = (interest * PROTOCOL_FEE_BPS) // 10000
+        lp_interest = interest - protocol_fee
+        self.liquidity_reserve_wei = u256(
+            int(self.liquidity_reserve_wei) + principal + lp_interest
+        )
+        self.protocol_fee_accrued_wei = u256(
+            int(self.protocol_fee_accrued_wei) + protocol_fee
+        )
         self.outstanding_principal_wei = u256(
             max(0, int(self.outstanding_principal_wei) - principal)
         )
@@ -627,6 +773,8 @@ Respond ONLY with this JSON (no markdown, no extra text):
             "status": "REPAID",
             "repayment_received": paid,
             "interest_booked": interest,
+            "interest_to_lps": lp_interest,
+            "protocol_fee": protocol_fee,
             "collateral_refunded": refund,
             "new_reputation_score": profile["score"],
             "score_boost": boost,
@@ -762,11 +910,39 @@ Respond ONLY with this JSON (no markdown, no extra text):
         }
 
     @gl.public.view
+    def get_lp_position(self, address: str) -> typing.Any:
+        """
+        A depositor's live position: shares held, their current redemption
+        value (principal + accrued yield), the earned yield vs. what they put
+        in, and how much of it the idle reserve could pay out right now.
+        """
+        addr = self._norm_addr(address)
+        shares = self._lp_shares_of(addr)
+        total_shares = int(self.total_lp_shares)
+        assets = self._pool_assets()
+        reserve = int(self.liquidity_reserve_wei)
+
+        value = (shares * assets) // total_shares if total_shares > 0 else 0
+        basis = self._lp_basis_of(addr)
+        return {
+            "address": addr,
+            "shares": shares,
+            "total_lp_shares": total_shares,
+            "share_of_pool_bps": (shares * 10000) // total_shares if total_shares > 0 else 0,
+            "current_value_wei": value,
+            "net_deposited_wei": basis,
+            # negative when write-offs have socialized a loss — honest number
+            "earned_yield_wei": value - basis,
+            "withdrawable_now_wei": min(value, reserve),
+        }
+
+    @gl.public.view
     def get_pool_stats(self) -> typing.Any:
         """Live solvency picture of the lending book."""
         reserve = int(self.liquidity_reserve_wei)
         outstanding = int(self.outstanding_principal_wei)
         total = reserve + outstanding
+        total_shares = int(self.total_lp_shares)
         return {
             "liquidity_reserve_wei": reserve,
             "outstanding_principal_wei": outstanding,
@@ -774,6 +950,11 @@ Respond ONLY with this JSON (no markdown, no extra text):
             "utilization_bps": self._utilization_bps(),
             "lifetime_interest_wei": int(self.lifetime_interest_wei),
             "lifetime_writeoff_wei": int(self.lifetime_writeoff_wei),
+            "total_lp_shares": total_shares,
+            # wei of pool assets per 1e18 shares (1e18 = par at bootstrap)
+            "share_price_wad": (total * 10**18) // total_shares if total_shares > 0 else 10**18,
+            "protocol_fee_bps": PROTOCOL_FEE_BPS,
+            "protocol_fee_accrued_wei": int(self.protocol_fee_accrued_wei),
         }
 
     @gl.public.view

@@ -65,6 +65,23 @@ class Kredo {
       const stderr: string = r?.genvm_result?.stderr ?? "";
       const userErr = stderr.match(/UserError: (.+)/)?.[1];
       if (userErr) throw new Error(userErr);
+      // A clean gl.vm.UserError revert arrives with EMPTY stderr — its message
+      // rides in a rollback "payload" field. Walk the receipt for it.
+      const payloads: string[] = [];
+      const walk = (o: any, d = 0) => {
+        if (!o || d > 8) return;
+        if (Array.isArray(o)) { o.forEach((x) => walk(x, d + 1)); return; }
+        if (typeof o === "object") {
+          if (typeof o.payload === "string" && o.payload && o.payload !== "exit_code 1") payloads.push(o.payload);
+          Object.values(o).forEach((v) => walk(v, d + 1));
+        }
+      };
+      walk(receipt);
+      const fromPayload = payloads.sort((a, b) => b.length - a.length)[0];
+      if (fromPayload) {
+        console.error("[Kredo] contract execution error:", { payloads });
+        throw new Error(fromPayload.slice(0, 240));
+      }
       // Fall back to the last meaningful line of the Python traceback
       const lines = stderr.trim().split("\n").filter((l) => l.trim() && !l.startsWith("  "));
       const lastMeaningful = lines[lines.length - 1] || "";
@@ -316,13 +333,13 @@ class Kredo {
     }
   }
 
-  /** Owner withdraws idle (un-lent) reserve from the pool. */
-  async withdrawLiquidity(amountWei: bigint): Promise<{ receipt: TransactionReceipt; txHash: string }> {
+  /** Any LP burns pool shares for their pro-rata slice (principal + yield). */
+  async withdrawLiquidity(sharesToBurn: bigint): Promise<{ receipt: TransactionReceipt; txHash: string }> {
     try {
       const txHash = await this.client.writeContract({
         address: this.contractAddress,
         functionName: "withdraw_liquidity",
-        args: [amountWei],
+        args: [sharesToBurn],
         value: BigInt(0),
       });
       const receipt = await this.waitAndVerify(txHash);
@@ -331,6 +348,38 @@ class Kredo {
       console.error("[Kredo] withdrawLiquidity failed:", err);
       throw err instanceof Error ? err : new Error("Failed to withdraw liquidity");
     }
+  }
+
+  /** Owner collects the accrued protocol fee on interest. */
+  async claimProtocolFees(): Promise<{ receipt: TransactionReceipt; txHash: string }> {
+    try {
+      const txHash = await this.client.writeContract({
+        address: this.contractAddress,
+        functionName: "claim_protocol_fees",
+        args: [],
+        value: BigInt(0),
+      });
+      const receipt = await this.waitAndVerify(txHash);
+      return { receipt, txHash: String(txHash) };
+    } catch (err) {
+      console.error("[Kredo] claimProtocolFees failed:", err);
+      throw err instanceof Error ? err : new Error("Failed to claim protocol fees");
+    }
+  }
+
+  /** A wallet's LP position: shares, current value, earned yield. */
+  async getLpPosition(address: string): Promise<any> {
+    const raw = await this.safeRead("get_lp_position", [address]);
+    const obj = this.toObj(raw);
+    return {
+      shares: BigInt(obj.shares ?? 0),
+      total_lp_shares: BigInt(obj.total_lp_shares ?? 0),
+      share_of_pool_bps: Number(obj.share_of_pool_bps ?? 0),
+      current_value_wei: BigInt(obj.current_value_wei ?? 0),
+      net_deposited_wei: BigInt(obj.net_deposited_wei ?? 0),
+      earned_yield_wei: BigInt(obj.earned_yield_wei ?? 0),
+      withdrawable_now_wei: BigInt(obj.withdrawable_now_wei ?? 0),
+    };
   }
 
   /** Live solvency snapshot of the lending book. Safe defaults on fresh deploy. */
@@ -344,6 +393,10 @@ class Kredo {
       utilization_bps: Number(obj.utilization_bps ?? 0),
       lifetime_interest_wei: BigInt(obj.lifetime_interest_wei ?? 0),
       lifetime_writeoff_wei: BigInt(obj.lifetime_writeoff_wei ?? 0),
+      total_lp_shares: BigInt(obj.total_lp_shares ?? 0),
+      share_price_wad: BigInt(obj.share_price_wad ?? 10n ** 18n),
+      protocol_fee_bps: Number(obj.protocol_fee_bps ?? 1000),
+      protocol_fee_accrued_wei: BigInt(obj.protocol_fee_accrued_wei ?? 0),
     };
   }
 
