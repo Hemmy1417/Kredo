@@ -505,6 +505,24 @@ def test_liquidation_loss_is_socialized_across_shares(module, contract):
     assert contract.get_pool_stats()["share_price_wad"] < 10 ** 18
 
 
+def test_overcollateralized_liquidation_windfall_accrues_to_shares(module, contract):
+    # A low-score borrower posts 130% collateral. On default the WHOLE seizure
+    # goes to the reserve (documented design), so the pool nets +0.3x principal
+    # — and under the share model that windfall accrues to LPs, mirroring how
+    # they eat the shortfall on undercollateralized defaults.
+    _deposit(module, contract, LP_A, 10 * GEN)
+    loan, collateral = _open_loan(module, contract, score=30, loan=2 * GEN)
+    assert collateral == 2 * GEN * 13000 // 10000   # 130 % tier
+    _as(module, OWNER, 0)
+    contract.liquidate_loan(loan["loan_id"])
+    windfall = collateral - 2 * GEN
+    pos = contract.get_lp_position(LP_A)
+    assert pos["current_value_wei"] == 10 * GEN + windfall
+    assert pos["earned_yield_wei"] == windfall
+    assert contract.get_pool_stats()["share_price_wad"] > 10 ** 18
+    assert contract.get_pool_stats()["lifetime_writeoff_wei"] == 0
+
+
 def test_full_exit_resets_share_price_to_par(module, contract):
     _deposit(module, contract, LP_A, 2 * GEN)
     _repaid_cycle(module, contract, loan_amount=GEN)

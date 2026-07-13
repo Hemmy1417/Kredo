@@ -64,7 +64,8 @@ export function LiquidityPanel() {
   // full holding so "everything I have" never over-asks by a rounding wei.
   const handleWithdraw = () => {
     if (!withdrawAmt || parseFloat(withdrawAmt) <= 0) return error("Enter a valid amount");
-    if (myShares <= BigInt(0) || myValue <= BigInt(0)) return error("No active deposit to withdraw");
+    if (myShares <= BigInt(0)) return error("No active deposit to withdraw");
+    if (myValue <= BigInt(0)) return error("Your shares are currently worth zero — nothing to withdraw");
     const amount = parseGen(withdrawAmt);
     let shares = amount >= myValue ? myShares : (amount * myShares) / myValue;
     if (shares <= BigInt(0)) return error("Amount too small");
