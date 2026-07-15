@@ -150,3 +150,15 @@ npm install && npm run dev
 - `NEXT_PUBLIC_GENLAYER_CHAIN_ID` — `61999` (Studionet)
 - `NEXT_PUBLIC_GENLAYER_CHAIN_NAME` — `GenLayer Studio`
 - `NEXT_PUBLIC_GENLAYER_SYMBOL` — `GEN`
+
+---
+
+## Signed writes
+
+Contract writes are signed by the **connected wallet's own EIP-1193 provider**. The
+contract wrapper resolves the injected provider (preferring MetaMask when several
+wallets are installed) and binds it into the genlayer-js client, so every transaction
+is signed by the wallet the user actually picked — never an implicit `window.ethereum`
+fallback that could be the wrong extension. A repository-level test
+(`frontend/tests/signed-write.test.ts`) proves the write path routes
+`eth_sendTransaction` through that provider with the correct `from`.
