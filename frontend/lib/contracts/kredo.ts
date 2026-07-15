@@ -1,5 +1,6 @@
 import { createClient } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
+import { getEthereumProvider } from "../genlayer/client";
 import type { Loan, ReputationProfile, TransactionReceipt } from "./types";
 
 /**
@@ -19,17 +20,25 @@ class Kredo {
     this.contractAddress = contractAddress as `0x${string}`;
 
     const config: any = { chain: studionet };
-    if (address)    config.account  = address as `0x${string}`;
+    if (address) {
+      config.account = address as `0x${string}`;
+      // Bind the CONNECTED wallet's EIP-1193 provider so writes are signed by
+      // the wallet the user actually picked — not genlayer-js's implicit
+      // window.ethereum fallback, which can be the wrong extension when
+      // several are installed.
+      const provider = typeof window !== "undefined" ? getEthereumProvider() : null;
+      if (provider) config.provider = provider;
+    }
     if (studioUrl)  config.endpoint = studioUrl;
 
     this.client = createClient(config);
   }
 
   updateAccount(address: string): void {
-    this.client = createClient({
-      chain: studionet,
-      account: address as `0x${string}`,
-    } as any);
+    const config: any = { chain: studionet, account: address as `0x${string}` };
+    const provider = typeof window !== "undefined" ? getEthereumProvider() : null;
+    if (provider) config.provider = provider;
+    this.client = createClient(config);
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────
