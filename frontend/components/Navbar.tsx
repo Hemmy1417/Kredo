@@ -1,16 +1,23 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { AccountPanel } from "./AccountPanel";
 import { EvaluateIdentityModal } from "./EvaluateIdentityModal";
 import { RequestLoanModal } from "./RequestLoanModal";
-import { useLoans } from "@/lib/hooks/useKredo";
 import { Logo, LogoMark } from "./LogoWordmark";
+
+const NAV = [
+  { href: "/desk",     label: "The Desk"     },
+  { href: "/vault",    label: "The Vault"    },
+  { href: "/register", label: "The Register" },
+];
 
 export function Navbar() {
   const [isScrolled, setIsScrolled] = useState(false);
   const [scrollProgress, setScrollProgress] = useState(0);
-  const { data: loans } = useLoans();
+  const pathname = usePathname();
 
   useEffect(() => {
     const handleScroll = () => {
@@ -37,10 +44,6 @@ export function Navbar() {
     return 0;
   };
   const borderRadius = getBorderRadius();
-
-  const totalLoans = loans?.length || 0;
-  const activeLoans = loans?.filter((l) => l.status === "ACTIVE").length || 0;
-  const repaidLoans = loans?.filter((l) => l.status === "REPAID").length || 0;
 
   return (
     <header
@@ -89,21 +92,28 @@ export function Navbar() {
                 <Logo size="md" className="hidden md:flex" />
               </div>
 
-              {/* Center: Stats */}
-              <div className="hidden md:flex items-center gap-6 text-sm">
-                <div className="flex items-center gap-2">
-                  <span className="text-muted-foreground">Total Loans:</span>
-                  <span className="font-bold text-accent">{totalLoans}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-muted-foreground">Active:</span>
-                  <span className="font-bold text-accent">{activeLoans}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-muted-foreground">Repaid:</span>
-                  <span className="font-bold text-accent">{repaidLoans}</span>
-                </div>
-              </div>
+              {/* Center: rooms of the house */}
+              <nav className="hidden md:flex items-center gap-7 text-sm">
+                {NAV.map(({ href, label }) => {
+                  const active = pathname?.startsWith(href);
+                  return (
+                    <Link
+                      key={href}
+                      href={href}
+                      className={`tracking-wide transition-colors ${
+                        active
+                          ? "text-accent font-semibold"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {label}
+                      {active && (
+                        <span className="block h-px mt-0.5 bg-gradient-to-r from-transparent via-accent/70 to-transparent" />
+                      )}
+                    </Link>
+                  );
+                })}
+              </nav>
 
               {/* Right: Actions */}
               <div className="flex items-center gap-3">
