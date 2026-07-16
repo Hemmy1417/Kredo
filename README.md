@@ -89,6 +89,29 @@ math floors in the pool's favor so rounding can never mint value; and because po
 are internal accounting (not a balance read), donating GEN straight to the contract address
 can't skew the share price — the classic vault inflation attack has no lever here.
 
+## Trust model: who must be trusted, with what
+
+- **The evidence — contract-chosen, borrower-proof.** The scoring panel only ever reads
+  URLs the *contract derives from the borrower's own address* (Blockscout's keyless JSON
+  API) plus the in-protocol repayment record. No user-supplied URL ever reaches the panel,
+  so there is no prompt-injection lever and no flattering-page exploit. And because the
+  footprint is a live view of append-only chain data, the only way to "manipulate" your
+  evidence is to actually build years of real on-chain history — which is not an attack,
+  it's the product working.
+- **The score — consensus, not an operator.** A score is written only under validator
+  consensus (bucketed equivalence on score band + risk tier). An unreachable footprint
+  scores LOW by explicit instruction — fail-closed: an outage can never mint credit.
+- **The keeper — trusted for timing, never for money.** Studionet exposes no wall clock,
+  so "past due" cannot be proven on-chain; the owner acts as keeper and determines default
+  off-chain. What bounds that trust is the money flow: liquidation sends **100% of seized
+  collateral to the LP pool** — the owner receives none of it — and books **no protocol
+  fee**, whereas a repayment would have earned the owner 10% of the interest. Liquidating
+  a healthy loan therefore *costs* the keeper revenue and pays them nothing. Liquidation
+  is also restricted to ACTIVE loans and books its write-off transparently.
+- **The pool — owned by its LPs.** The owner's only claim on contract funds is the accrued
+  10% fee pot (`claim_protocol_fees`). Deposits, yield, and withdrawals require no trust in
+  the owner at all.
+
 ## Honest boundaries
 
 - **No wall-clock on Studionet** — loan due dates are advisory (tracked client-side); the keeper determines default off-chain. A production deploy would source time from a validator oracle and open liquidation past a proven due block.
