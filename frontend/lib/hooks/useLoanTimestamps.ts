@@ -63,9 +63,15 @@ export function useLoanTimestamps(loans: Loan[] | undefined): Timestamps {
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /**
- * Return { elapsedDays, remainingDays, dueAt } for a loan, based on the
- * browser-recorded first-seen timestamp. If the browser has never seen this
- * loan (i.e. someone else took it), returns nulls.
+ * Return timing info for a loan. v0.4 loans carry a REAL on-chain maturity the
+ * contract fetched from public clocks at origination (due_at_epoch), so we use
+ * that — it's authoritative and identical for everyone. Only legacy loans (or
+ * loans opened while the clock was unreachable, due_at_epoch === 0) fall back to
+ * the browser's first-seen timestamp.
+ *
+ * `onChain` says which basis was used; `isOverduePastGrace` mirrors exactly the
+ * predicate the contract uses to allow permissionless liquidation, so the UI
+ * only offers that action when the chain would actually accept it.
  */
 export function computeLoanClock(
   loan: Loan,
@@ -75,18 +81,49 @@ export function computeLoanClock(
   elapsedDays: number;
   remainingDays: number | null;
   dueAt: number | null;
+  graceAt: number | null;
+  onChain: boolean;
+  isOverduePastGrace: boolean;
 } {
+  const now = Date.now();
+  const dueEpoch = Number(loan.due_at_epoch ?? 0);
+
+  // ── on-chain maturity (v0.4) — the trusted path ──────────────────────────
+  if (dueEpoch > 0) {
+    const disbursed = Number(loan.disbursed_at_epoch ?? 0);
+    const graceEpoch = Number(loan.grace_until_epoch ?? dueEpoch);
+    const createdAt = disbursed > 0 ? disbursed * 1000 : null;
+    const dueAt = dueEpoch * 1000;
+    const graceAt = graceEpoch * 1000;
+    const remainingDays = (dueAt - now) / MS_PER_DAY;
+    const elapsedDays = createdAt !== null ? Math.max(0, now - createdAt) / MS_PER_DAY : 0;
+    return {
+      createdAt,
+      elapsedDays,
+      remainingDays,
+      dueAt,
+      graceAt,
+      onChain: true,
+      isOverduePastGrace: now / 1000 > graceEpoch,
+    };
+  }
+
+  // ── legacy fallback: browser-recorded first-seen timestamp ───────────────
   const createdAt = timestamps[loan.loan_id] ?? null;
   if (createdAt === null) {
-    return { createdAt: null, elapsedDays: 0, remainingDays: null, dueAt: null };
+    return {
+      createdAt: null, elapsedDays: 0, remainingDays: null, dueAt: null,
+      graceAt: null, onChain: false, isOverduePastGrace: false,
+    };
   }
-  const now = Date.now();
-  const elapsedMs = Math.max(0, now - createdAt);
-  const elapsedDays = elapsedMs / MS_PER_DAY;
+  const elapsedDays = Math.max(0, now - createdAt) / MS_PER_DAY;
   const duration = Number(loan.duration_days ?? 0);
   const dueAt = createdAt + duration * MS_PER_DAY;
   const remainingDays = (dueAt - now) / MS_PER_DAY;
-  return { createdAt, elapsedDays, remainingDays, dueAt };
+  return {
+    createdAt, elapsedDays, remainingDays, dueAt,
+    graceAt: null, onChain: false, isOverduePastGrace: false,
+  };
 }
 
 /**

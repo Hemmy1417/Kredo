@@ -24,8 +24,10 @@ export function LoanTable() {
   const { data: params } = useProtocolParams();
   const timestamps = useLoanTimestamps(loans);
 
-  // Liquidation is a keeper action: owner-only on the contract, so only the
-  // owner sees the button (anyone else's tx would just revert on-chain).
+  // Liquidation is permissionless once the contract can PROVE a loan is overdue
+  // (v0.4). The owner remains a fallback keeper for loans with no on-chain due
+  // date (clock was down at origination). The UI shows the button when the
+  // chain would actually accept the call — otherwise it would just revert.
   const isOwner =
     !!address &&
     !!params?.owner &&
@@ -53,26 +55,56 @@ export function LoanTable() {
     };
   }, [loans, address]);
 
-  const handleRepay = (loan: Loan) => {
+  // 5% flat late fee on principal, mirroring the contract's LATE_FEE_BPS.
+  const LATE_FEE_BPS = 500n;
+
+  const handleRepay = (loan: Loan, partial: boolean) => {
     if (!address) {
       error("Please connect your wallet to repay loans");
       return;
     }
     const clock = computeLoanClock(loan, timestamps);
-    const dueBits =
-      clock.remainingDays === null
-        ? ""
-        : clock.remainingDays >= 0
-        ? `\nDue in ${Math.max(1, Math.round(clock.remainingDays))} day(s).`
-        : `\nOverdue by ${Math.abs(Math.round(clock.remainingDays))} day(s).`;
-    const confirmed = confirm(
-      `Repay loan #${loan.loan_id}?\n\n` +
-      `Refund of your collateral: ${formatGen(loan.collateral_amount)} GEN.\n` +
-      `Your reputation score gets a +5 boost (capped at 100).${dueBits}`
-    );
-    if (confirmed) repayLoan({
+    const overdue = clock.remainingDays !== null && clock.remainingDays < 0;
+    const alreadyRepaid = loan.amount_repaid ?? 0n;
+    const lateFee = overdue ? (loan.loan_amount * LATE_FEE_BPS) / 10000n : 0n;
+    // Full payoff = principal + interest (+ late fee if overdue) − partials paid.
+    const fullOutstanding = loan.repayment_amount + lateFee - alreadyRepaid;
+
+    let amountWei: bigint;
+    if (partial) {
+      const raw = prompt(
+        `Partial payment — loan #${loan.loan_id}\n\n` +
+        `Outstanding: ${formatGen(fullOutstanding)} GEN` +
+        (overdue ? " (includes a 5% late fee)" : "") +
+        `\nEnter the amount to pay now (in GEN):`,
+        ""
+      );
+      if (raw === null) return;
+      const val = Number(raw.trim());
+      if (!isFinite(val) || val <= 0) {
+        error("Enter a positive GEN amount");
+        return;
+      }
+      amountWei = BigInt(Math.round(val * 1e18));
+      if (amountWei < 10n ** 15n && amountWei < fullOutstanding) {
+        error("Minimum partial payment is 0.001 GEN");
+        return;
+      }
+    } else {
+      amountWei = fullOutstanding;
+      const confirmed = confirm(
+        `Repay loan #${loan.loan_id} in full?\n\n` +
+        `You send ${formatGen(fullOutstanding)} GEN` +
+        (overdue ? " (includes a 5% late fee).\n" : ".\n") +
+        `Your collateral (${formatGen(loan.collateral_amount)} GEN) is refunded in the same tx, ` +
+        `and your reputation score gets a +5 boost (capped at 100).`
+      );
+      if (!confirmed) return;
+    }
+
+    repayLoan({
       loanId: loan.loan_id,
-      repaymentAmount: loan.repayment_amount,
+      repaymentAmount: amountWei,
       priorScore: reputation?.score ?? 0,
     });
   };
@@ -82,10 +114,16 @@ export function LoanTable() {
       error("Please connect your wallet to liquidate loans");
       return;
     }
+    const clock = computeLoanClock(loan, timestamps);
+    const permissionless = clock.isOverduePastGrace && !isOwner;
+    const incentive = (loan.collateral_amount * LATE_FEE_BPS) / 10000n; // 5% keeper reward
     const confirmed = confirm(
       `Liquidate loan #${loan.loan_id}?\n\n` +
-      `The escrowed collateral (${formatGen(loan.collateral_amount)} GEN) is seized into the pool reserve; ` +
-      `any shortfall vs the disbursed principal is booked as a write-off.\n` +
+      (permissionless
+        ? `This loan is PROVABLY overdue (past its on-chain due date + grace). ` +
+          `You earn a keeper reward of ${formatGen(incentive)} GEN from the seized collateral.\n`
+        : `The escrowed collateral (${formatGen(loan.collateral_amount)} GEN) is seized into the pool reserve; ` +
+          `the loss reserve absorbs any shortfall before LPs.\n`) +
       `The borrower's reputation score drops by up to 20 points.`
     );
     if (confirmed) liquidateLoan({
@@ -230,8 +268,10 @@ export function LoanTable() {
         </table>
       </div>
       <p className="px-4 py-3 text-xs text-muted-foreground border-t border-white/5">
-        Timestamps are tracked by your browser. Studionet has no on-chain wall-clock — a production
-        deploy would source time from a validator oracle.
+        <ShieldCheck className="inline w-3 h-3 mr-1 text-accent/70" />
+        Loans carry a real on-chain due date the contract fetched from public clocks at origination.
+        Once a loan clears its due date + grace, anyone can liquidate it — the contract re-fetches the
+        time to prove it&apos;s overdue, so no keeper can seize a current borrower&apos;s collateral.
       </p>
     </div>
   );
@@ -244,7 +284,7 @@ interface LoanRowProps {
   isConnected: boolean;
   isWalletLoading: boolean;
   isOwner: boolean;
-  onRepay: (loan: Loan) => void;
+  onRepay: (loan: Loan, partial: boolean) => void;
   onLiquidate: (loan: Loan) => void;
   isRepaying: boolean;
   isLiquidating: boolean;
@@ -255,6 +295,14 @@ function DueChip({ clock, status }: { clock: LoanClock; status: string }) {
   if (status === "LIQUIDATED") return <span className="text-xs text-muted-foreground">Closed</span>;
   if (clock.remainingDays === null) {
     return <span className="text-xs text-muted-foreground">Not observed here</span>;
+  }
+  // Once past due + grace, the loan is permissionlessly liquidatable — call it out.
+  if (clock.isOverduePastGrace) {
+    return (
+      <Badge variant="outline" className="bg-red-500/20 text-red-400 border-red-500/40">
+        Liquidatable
+      </Badge>
+    );
   }
   const d = clock.remainingDays;
   const label =
@@ -267,9 +315,16 @@ function DueChip({ clock, status }: { clock: LoanClock; status: string }) {
     : d < 7 ? "bg-yellow-500/15 text-yellow-400 border-yellow-500/30"
     : "bg-green-500/15 text-green-400 border-green-500/30";
   return (
-    <Badge variant="outline" className={cls}>
-      {label}
-    </Badge>
+    <span className="inline-flex items-center gap-1">
+      <Badge variant="outline" className={cls}>
+        {label}
+      </Badge>
+      {clock.onChain && (
+        <span title="On-chain due date, fetched from public clocks at origination">
+          <ShieldCheck className="w-3 h-3 text-accent/70" />
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -315,13 +370,18 @@ function LoanRow({
     currentAddress?.toLowerCase() === loan.borrower?.toLowerCase();
   const isActive = loan.status === "ACTIVE";
   const canRepay = isConnected && isBorrower && isActive && !isWalletLoading;
-  // Owner-only keeper action (the contract enforces it; anyone else would
-  // revert). The owner may liquidate their own loan too — collateral goes to
-  // the pool reserve, not to the caller, so there's no self-dealing.
-  const canLiquidate = isConnected && isOwner && isActive && !isWalletLoading;
+  // Liquidation is permissionless once the loan is PROVABLY overdue (past its
+  // on-chain due date + grace); the owner is the keeper fallback for loans with
+  // no on-chain due date. Both match what the contract will actually accept.
+  const permissionlessLiquidatable = clock.isOverduePastGrace;
+  const canLiquidate =
+    isConnected && isActive && !isWalletLoading &&
+    (isOwner || permissionlessLiquidatable);
 
   const aprPercent = ((loan.interest_rate_apr ?? 0) * 100).toFixed(1);
   const collateralPct = ((loan.collateral_ratio ?? 0) * 100).toFixed(0);
+  const repaid = loan.amount_repaid ?? 0n;
+  const partiallyRepaid = isActive && repaid > 0n;
 
   return (
     <tr className="group hover:bg-white/5 transition-colors animate-fade-in">
@@ -348,6 +408,11 @@ function LoanRow({
           <span className="text-xs text-muted-foreground">
             Repay: {formatGen(loan.repayment_amount)} GEN
           </span>
+          {partiallyRepaid && (
+            <span className="text-[11px] text-accent/80 mt-0.5">
+              Paid {formatGen(repaid)} · {formatGen(loan.repayment_amount - repaid)} GEN left
+            </span>
+          )}
           {clock.createdAt !== null && (
             <span className="text-[11px] text-muted-foreground/70 mt-0.5">
               Requested {timeAgo(clock.createdAt)}
@@ -386,21 +451,32 @@ function LoanRow({
       <td className="px-4 py-4">
         <div className="flex items-center gap-2">
           {canRepay && (
-            <Button
-              onClick={() => onRepay(loan)}
-              disabled={isRepaying}
-              size="sm"
-              variant="gradient"
-            >
-              {isRepaying ? (
-                <>
-                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                  Repaying...
-                </>
-              ) : (
-                "Repay"
-              )}
-            </Button>
+            <>
+              <Button
+                onClick={() => onRepay(loan, false)}
+                disabled={isRepaying}
+                size="sm"
+                variant="gradient"
+              >
+                {isRepaying ? (
+                  <>
+                    <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                    Repaying...
+                  </>
+                ) : (
+                  "Repay full"
+                )}
+              </Button>
+              <Button
+                onClick={() => onRepay(loan, true)}
+                disabled={isRepaying}
+                size="sm"
+                variant="outline"
+                title="Pay down part of the balance now; the loan stays open"
+              >
+                Partial
+              </Button>
+            </>
           )}
           {canLiquidate && (
             <Button
@@ -409,12 +485,19 @@ function LoanRow({
               size="sm"
               variant="outline"
               className="text-destructive hover:text-destructive border-destructive/30"
+              title={
+                permissionlessLiquidatable && !isOwner
+                  ? "This loan is provably overdue — liquidate it and earn a 5% keeper reward"
+                  : "Keeper liquidation"
+              }
             >
               {isLiquidating ? (
                 <>
                   <Loader2 className="w-3 h-3 mr-1 animate-spin" />
                   Liquidating...
                 </>
+              ) : permissionlessLiquidatable && !isOwner ? (
+                "Liquidate · +5%"
               ) : (
                 "Liquidate"
               )}

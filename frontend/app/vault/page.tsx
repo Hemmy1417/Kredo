@@ -10,7 +10,7 @@ export default function VaultPage() {
     <PageShell
       eyebrow="The Vault"
       title="The pool behind every loan"
-      lede="Deposit GEN and hold shares of the book. Ninety percent of all interest accrues to the share price automatically; withdraw your slice — principal and yield — whenever the idle reserve covers it."
+      lede="Deposit GEN and hold shares of the book. Most of every interest payment accrues to the share price automatically — a slice is set aside as a loss reserve that absorbs defaults before you feel them. Withdraw your slice, principal and yield, whenever the idle reserve covers it."
     >
       <section className="animate-fade-in">
         <ProtocolStatsStrip />

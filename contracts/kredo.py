@@ -1,4 +1,4 @@
-# v0.3.0
+# v0.4.0
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 
 from genlayer import *
@@ -9,6 +9,92 @@ import typing
 # Slice of loan interest kept as protocol revenue; the rest accrues to LP
 # shares. 1000 bps = 10 %.
 PROTOCOL_FEE_BPS = 1000
+
+# Slice of loan interest diverted into the loss-reserve buffer (see below).
+# This is money that would otherwise raise LP share price — set aside so the
+# pool can absorb defaults before any LP feels them. 500 bps = 5 %.
+RESERVE_FACTOR_BPS = 500
+
+# ── real-maturity enforcement (v0.4) ─────────────────────────────────────────
+# Studionet's GenVM has no wall-clock, so a loan's due date can't come from the
+# block. The contract instead FETCHES the current UTC time from public keyless
+# clocks under a consensus principle and stamps each loan with a real epoch. A
+# loan is "provably overdue" only when a fresh fetch clears due + grace — which
+# means ANYONE can liquidate a genuine default (permissionless), and NO ONE can
+# seize a healthy borrower's collateral. That retires the trusted-keeper caveat.
+
+# Grace period added after the due date before a loan can be liquidated (secs).
+GRACE_SECONDS = 3 * 24 * 60 * 60          # 3 days
+
+# Flat late fee added to the payoff once a loan is past its due date, charged on
+# the principal. 500 bps = 5 %.
+LATE_FEE_BPS = 500
+
+# Reward paid to whoever liquidates a provably-overdue loan, taken from the
+# seized collateral. Safe to pay ONLY because "overdue" is proven by a fetched
+# clock, not asserted — a keeper can't grief a current borrower for it.
+LIQUIDATION_INCENTIVE_BPS = 500           # 5 % of seized collateral
+
+# Smallest partial repayment the pool will book, to stop dust spam. 0.001 GEN.
+MIN_PARTIAL_WEI = 10**15
+
+# Keyless public UTC clocks, tried in order; one clean read suffices.
+TIME_SOURCES = [
+    "https://timeapi.io/api/Time/current/zone?timeZone=UTC",
+    "https://cloudflare.com/cdn-cgi/trace",
+    "https://worldtimeapi.org/api/timezone/Etc/UTC",
+]
+
+# Sanity floor — any parsed epoch below this (≈2023-11) is treated as garbage.
+MIN_SANE_EPOCH = 1_700_000_000
+
+
+def _epoch_from_civil(y: int, m: int, d: int, hh: int, mm: int, ss: int) -> int:
+    """
+    Deterministic civil-date → Unix epoch (UTC), Howard Hinnant's days_from_civil.
+    No wall-clock, no library time — pure arithmetic every validator reproduces.
+    """
+    y = int(y)
+    m = int(m)
+    d = int(d)
+    yy = y - (1 if m <= 2 else 0)
+    era = (yy if yy >= 0 else yy - 399) // 400
+    yoe = yy - era * 400
+    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + (d - 1)
+    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy
+    days = era * 146097 + doe - 719468
+    return days * 86400 + int(hh) * 3600 + int(mm) * 60 + int(ss)
+
+
+def _parse_epoch_from_clock(url: str, raw: str) -> int:
+    """
+    Pull a Unix epoch out of whatever a given clock source returned. Each source
+    has a distinct shape; any parse failure returns 0 so the caller moves on.
+      • timeapi.io       → JSON {year,month,day,hour,minute,seconds}
+      • cloudflare trace → text with a `ts=1710000000.123` line
+      • worldtimeapi     → JSON {unixtime: 1710000000}
+    """
+    try:
+        text = raw if isinstance(raw, str) else str(raw)
+        if "timeapi.io" in url:
+            d = json.loads(text)
+            return _epoch_from_civil(
+                d["year"], d["month"], d["day"],
+                d.get("hour", 0), d.get("minute", 0), d.get("seconds", 0),
+            )
+        if "cloudflare.com" in url:
+            for line in text.splitlines():
+                if line.startswith("ts="):
+                    return int(float(line[3:]))
+            return 0
+        if "worldtimeapi.org" in url:
+            d = json.loads(text)
+            return int(d["unixtime"])
+        # Unknown source: last-ditch try for a bare JSON unixtime field.
+        d = json.loads(text)
+        return int(d.get("unixtime", 0))
+    except Exception:
+        return 0
 
 
 # Empty EVM interface: paying a wallet is an external message through the
@@ -77,6 +163,13 @@ class Kredo(gl.Contract):
     # lifetime principal the pool wrote off on liquidated defaults (wei)
     lifetime_writeoff_wei: u256
 
+    # loss-reserve buffer (wei): a slice of every interest payment, held aside
+    # to absorb default write-offs BEFORE they socialise onto LP share price
+    loss_reserve_wei: u256
+
+    # lifetime late fees collected on overdue payoffs (wei) — accrues to LPs
+    lifetime_late_fees_wei: u256
+
     # ── LP share registry (who owns the pool) ───────────────────────────────────
 
     # pool shares per depositor  {address_str -> shares (str int)}
@@ -98,12 +191,17 @@ class Kredo(gl.Contract):
         self.reputation_registry = TreeMap()
         self.loans = TreeMap()
         self.loan_counter = u256(0)
-        self.owner = owner
+        # Deploy tooling may hand the owner in as a plain hex string (genlayer-js
+        # encodes the arg as a str) rather than an Address; coerce so the typed
+        # storage field always receives a real Address (never re-wrap one).
+        self.owner = owner if isinstance(owner, Address) else Address(owner)
         self.min_reputation_to_borrow = u256(min_reputation_to_borrow)
         self.liquidity_reserve_wei = u256(0)
         self.outstanding_principal_wei = u256(0)
         self.lifetime_interest_wei = u256(0)
         self.lifetime_writeoff_wei = u256(0)
+        self.loss_reserve_wei = u256(0)
+        self.lifetime_late_fees_wei = u256(0)
         self.lp_shares = TreeMap()
         self.total_lp_shares = u256(0)
         self.lp_net_deposit_wei = TreeMap()
@@ -112,6 +210,40 @@ class Kredo(gl.Contract):
     # ────────────────────────────────────────────────────────────────────────────
     # INTERNAL HELPERS
     # ────────────────────────────────────────────────────────────────────────────
+
+    def _utc_now(self) -> int:
+        """
+        Current UTC epoch, fetched from public keyless clocks under a consensus
+        principle. Returns 0 when no clock can be trusted — NEVER raises — so
+        each caller decides how to degrade:
+          • request_loan  → stamp due=0 (owner-keeper fallback) if 0
+          • repay_loan    → skip the late fee if 0 (favour the borrower)
+          • liquidate_loan→ permissionless path requires now>0 (fail closed)
+        Validators agree the epoch to the minute; wilder spread is distrusted.
+        """
+        def read_clock() -> str:
+            cands = []
+            for url in TIME_SOURCES:
+                try:
+                    raw = gl.nondet.web.render(url, mode="text")
+                except Exception:
+                    continue
+                epoch = _parse_epoch_from_clock(url, raw)
+                if epoch > MIN_SANE_EPOCH:
+                    cands.append(epoch)
+            if len(cands) >= 2 and (max(cands) - min(cands)) > 300:
+                return "0"                       # sources diverge → distrust
+            return str(min(cands)) if cands else "0"
+
+        principle = (
+            "Outputs are equivalent if both are integer UTC epoch seconds within "
+            "300 of each other (the value 0 means no reliable time was obtained)."
+        )
+        try:
+            got = int(str(gl.eq_principle.prompt_comparative(read_clock, principle)).strip() or "0")
+        except Exception:
+            return 0
+        return got if got > MIN_SANE_EPOCH else 0
 
     def _only_owner(self) -> None:
         # Normalise both sides the same way every other address is handled, and
@@ -710,6 +842,19 @@ Respond ONLY with this JSON (no markdown, no extra text):
 
         collateral_amount = sent_value
 
+        # Stamp a REAL maturity. The contract fetches UTC now from public clocks
+        # and records due = now + term, plus a grace window. If no clock can be
+        # trusted at origination, due stays 0 and this loan falls back to the
+        # owner-keeper for default handling (it can never be liquidated by the
+        # permissionless time-proof path). Borrowing stays available either way.
+        now = self._utc_now()
+        if now > 0:
+            due_at = now + int(duration_days) * 86400
+            grace_until = due_at + GRACE_SECONDS
+        else:
+            due_at = 0
+            grace_until = 0
+
         self.loan_counter = u256(int(self.loan_counter) + 1)
         loan_id = str(int(self.loan_counter))
 
@@ -725,10 +870,13 @@ Respond ONLY with this JSON (no markdown, no extra text):
             "experience_surcharge_bps": quote["experience_surcharge_bps"],
             "interest_amount": quote["interest_amount"],
             "repayment_amount": quote["repayment_amount"],
+            "amount_repaid": 0,       # cumulative partial repayments (wei)
             "duration_days": int(duration_days),
             "reputation_score_at_origination": score,
             "status": "ACTIVE",       # ACTIVE | REPAID | LIQUIDATED
-            "created_at": "created",  # block timestamp placeholder
+            "disbursed_at_epoch": now,
+            "due_at_epoch": due_at,
+            "grace_until_epoch": grace_until,
         }
         self._save_loan(loan)
 
@@ -758,16 +906,28 @@ Respond ONLY with this JSON (no markdown, no extra text):
             "repayment_amount": quote["repayment_amount"],
             "duration_days": int(duration_days),
             "reputation_score": score,
+            "disbursed_at_epoch": now,
+            "due_at_epoch": due_at,
+            "grace_until_epoch": grace_until,
         }
 
     @gl.public.write.payable
     def repay_loan(self, loan_id: str, repayment_amount: int) -> typing.Any:
         """
-        Close a loan cleanly. The borrower returns principal + interest via
-        `gl.message.value`; the pool refunds the escrowed collateral (plus any
-        overpayment). 90 % of the interest accrues to LP shares (raising the
-        share price for every depositor pro-rata); 10 % is protocol fee. Only
-        the borrower may repay. Reputation is boosted on a clean repayment.
+        Repay a loan — in full OR in part. The borrower sends GEN via
+        `gl.message.value`; `msg.value` is authoritative (the `repayment_amount`
+        argument is advisory, kept for the wrapper). Partial payments accumulate
+        on the loan (held in escrow) and it stays ACTIVE until the running total
+        clears what is owed. The final payment settles the whole loan:
+
+          • principal returns to the reserve
+          • interest splits three ways — protocol fee, a loss-reserve cut, and
+            the remainder onto LP share price (the yield distribution)
+          • any late fee (charged once the loan is past due) accrues to LPs
+          • escrowed collateral + any overpayment refund to the borrower
+          • reputation is boosted, deterministically, on a clean full repayment
+
+        Only the borrower may repay.
         """
         loan = self._get_loan(loan_id)
 
@@ -778,29 +938,63 @@ Respond ONLY with this JSON (no markdown, no extra text):
         if sender.lower() != str(loan["borrower"]).lower():
             raise gl.vm.UserError("only the borrower may repay this loan")
 
-        due = int(loan["repayment_amount"])
-        paid = int(gl.message.value)
-        if paid < due:
-            raise gl.vm.UserError(
-                f"Insufficient repayment: {paid} wei sent, {due} wei due "
-                f"(principal {int(loan['loan_amount'])} + interest "
-                f"{int(loan['interest_amount'])})"
-            )
-
         principal = int(loan["loan_amount"])
         interest = int(loan["interest_amount"])
         collateral = int(loan["collateral_amount"])
-        overpay = paid - due
+        base_owed = int(loan["repayment_amount"])          # principal + interest
+        already = int(loan.get("amount_repaid", 0))
 
-        # Principal returns to the reserve. Interest is split: the protocol
-        # keeps a fee, the rest lands in the reserve — which raises the value
-        # of every LP share proportionally (shares outstanding don't change),
-        # so this line IS the yield distribution.
+        # Late fee applies once the loan is provably past its due date. The clock
+        # is best-effort here: if it can't be read (returns 0) we charge NO late
+        # fee — never punish a borrower for a clock outage they didn't cause.
+        due_epoch = int(loan.get("due_at_epoch", 0))
+        now = self._utc_now()
+        past_due = due_epoch > 0 and now > 0 and now > due_epoch
+        late_fee = (principal * LATE_FEE_BPS) // 10000 if past_due else 0
+
+        total_owed = base_owed + late_fee
+        outstanding = max(0, total_owed - already)
+
+        paid = int(gl.message.value)
+        if paid <= 0:
+            raise gl.vm.UserError("repayment must send a positive amount")
+
+        # ── PARTIAL: doesn't clear the balance — book it and keep the loan open ──
+        if paid < outstanding:
+            if paid < MIN_PARTIAL_WEI:
+                raise gl.vm.UserError(
+                    f"partial repayment too small: {paid} wei (min "
+                    f"{MIN_PARTIAL_WEI} wei, or send the full {outstanding} wei "
+                    f"remaining to close the loan)"
+                )
+            loan["amount_repaid"] = already + paid
+            self._save_loan(loan)
+            return {
+                "loan_id": loan_id,
+                "status": "ACTIVE",
+                "payment_type": "partial",
+                "payment_received": paid,
+                "amount_repaid": already + paid,
+                "total_owed": total_owed,
+                "outstanding": max(0, total_owed - (already + paid)),
+                "late_fee_applied": late_fee,
+                "past_due": past_due,
+            }
+
+        # ── FULL: this payment clears the balance — settle the whole loan ───────
+        overpay = paid - outstanding
+
+        # Interest splits three ways: protocol fee, loss-reserve cut, LP yield.
         protocol_fee = (interest * PROTOCOL_FEE_BPS) // 10000
-        lp_interest = interest - protocol_fee
+        reserve_cut = (interest * RESERVE_FACTOR_BPS) // 10000
+        lp_interest = interest - protocol_fee - reserve_cut
+
+        # Principal + LP interest + any late fee land in the reserve (raising
+        # share price pro-rata); the reserve cut tops up the loss buffer.
         self.liquidity_reserve_wei = u256(
-            int(self.liquidity_reserve_wei) + principal + lp_interest
+            int(self.liquidity_reserve_wei) + principal + lp_interest + late_fee
         )
+        self.loss_reserve_wei = u256(int(self.loss_reserve_wei) + reserve_cut)
         self.protocol_fee_accrued_wei = u256(
             int(self.protocol_fee_accrued_wei) + protocol_fee
         )
@@ -808,6 +1002,10 @@ Respond ONLY with this JSON (no markdown, no extra text):
             max(0, int(self.outstanding_principal_wei) - principal)
         )
         self.lifetime_interest_wei = u256(int(self.lifetime_interest_wei) + interest)
+        if late_fee > 0:
+            self.lifetime_late_fees_wei = u256(
+                int(self.lifetime_late_fees_wei) + late_fee
+            )
 
         # Refund the escrowed collateral (plus any overpayment) to the borrower.
         refund = collateral + overpay
@@ -815,6 +1013,8 @@ Respond ONLY with this JSON (no markdown, no extra text):
             _Payee(Address(loan["borrower"])).emit_transfer(value=u256(refund), on="finalized")
 
         loan["status"] = "REPAID"
+        loan["amount_repaid"] = total_owed
+        loan["late_fee_charged"] = late_fee
         self._save_loan(loan)
 
         # boost borrower reputation — deterministic (+5 per repaid), not a re-roll
@@ -828,10 +1028,15 @@ Respond ONLY with this JSON (no markdown, no extra text):
         return {
             "loan_id": loan_id,
             "status": "REPAID",
+            "payment_type": "full",
             "repayment_received": paid,
+            "amount_repaid": total_owed,
             "interest_booked": interest,
             "interest_to_lps": lp_interest,
             "protocol_fee": protocol_fee,
+            "loss_reserve_added": reserve_cut,
+            "late_fee_charged": late_fee,
+            "past_due": past_due,
             "collateral_refunded": refund,
             "new_reputation_score": profile["score"],
             "score_boost": boost,
@@ -840,37 +1045,84 @@ Respond ONLY with this JSON (no markdown, no extra text):
     @gl.public.write
     def liquidate_loan(self, loan_id: str) -> typing.Any:
         """
-        Write off a defaulted loan. The seized collateral is returned to the
-        pool reserve to offset the disbursed principal; any shortfall
-        (undercollateralized gap) is booked as a pool write-off. The borrower's
-        score is penalised.
+        Write off a defaulted loan. Seized collateral (plus any partial the
+        borrower already paid) offsets the disbursed principal; the loss-reserve
+        buffer absorbs whatever gap remains before any LP feels it, and only the
+        leftover is a socialised write-off. The borrower's score is penalised.
 
-        OWNER/KEEPER ONLY. Studionet has no wall-clock, so "past due" can't be
-        proven on-chain; letting anyone liquidate an ACTIVE loan would let them
-        seize a healthy borrower's collateral. The owner is the trusted keeper
-        that determines default off-chain. (This closes a real theft vector in
-        the earlier symbolic design.)
+        PERMISSIONLESS WHEN PROVABLY OVERDUE. The contract fetches UTC now from
+        public clocks; if the loan has a real on-chain due date and now clears
+        due + grace, ANYONE may liquidate it — and earns a keeper incentive from
+        the seized collateral. That reward is safe precisely because "overdue"
+        is proven by a fetched clock, not asserted, so no one can grief a current
+        borrower. Loans with no stamped due date (clock was down at origination)
+        fall back to OWNER-ONLY liquidation. This retires the trusted-keeper
+        dependency for the normal path.
         """
-        self._only_owner()
         loan = self._get_loan(loan_id)
 
         if loan["status"] != "ACTIVE":
             raise gl.vm.UserError(f"Loan {loan_id} is not active")
 
+        sender = self._norm_addr(gl.message.sender_address)
+        is_owner = bool(sender) and sender == self._norm_addr(self.owner)
+
+        due_epoch = int(loan.get("due_at_epoch", 0))
+        grace_epoch = int(loan.get("grace_until_epoch", 0))
+        now = self._utc_now()
+        provably_overdue = due_epoch > 0 and now > 0 and now > grace_epoch
+
+        if not (provably_overdue or is_owner):
+            # Not proven late and caller isn't the keeper → refuse.
+            if due_epoch <= 0:
+                raise gl.vm.UserError(
+                    "loan has no on-chain due date (clock was down at "
+                    "origination) — only the owner-keeper can liquidate it"
+                )
+            raise gl.vm.UserError(
+                "loan is not provably overdue yet: current time has not cleared "
+                f"the due date + grace ({grace_epoch}). "
+                + ("clock unreadable right now — try again shortly"
+                   if now == 0 else f"now={now}")
+            )
+
         principal = int(loan["loan_amount"])
         collateral = int(loan["collateral_amount"])
+        already = int(loan.get("amount_repaid", 0))
 
-        # Seized collateral offsets the principal; the pool eats any shortfall.
-        self.liquidity_reserve_wei = u256(int(self.liquidity_reserve_wei) + collateral)
+        # Keeper incentive: paid ONLY to a non-owner who liquidated via the
+        # time-proof path (owner keeper acts for the protocol, takes no cut).
+        incentive = 0
+        if provably_overdue and not is_owner:
+            incentive = (collateral * LIQUIDATION_INCENTIVE_BPS) // 10000
+
+        seized = collateral - incentive
+        recovered = seized + already                 # collateral + partials paid
+
+        # The loss-reserve buffer absorbs the shortfall before LPs do.
+        gross_loss = max(0, principal - recovered)
+        absorbed = min(gross_loss, int(self.loss_reserve_wei))
+        net_writeoff = gross_loss - absorbed
+
+        self.liquidity_reserve_wei = u256(
+            int(self.liquidity_reserve_wei) + recovered + absorbed
+        )
+        self.loss_reserve_wei = u256(int(self.loss_reserve_wei) - absorbed)
         self.outstanding_principal_wei = u256(
             max(0, int(self.outstanding_principal_wei) - principal)
         )
-        writeoff = max(0, principal - collateral)
-        self.lifetime_writeoff_wei = u256(int(self.lifetime_writeoff_wei) + writeoff)
+        self.lifetime_writeoff_wei = u256(
+            int(self.lifetime_writeoff_wei) + net_writeoff
+        )
+
+        if incentive > 0:
+            _Payee(Address(sender)).emit_transfer(value=u256(incentive), on="finalized")
 
         loan["status"] = "LIQUIDATED"
-        loan["seized_collateral"] = collateral
-        loan["writeoff"] = writeoff
+        loan["seized_collateral"] = seized
+        loan["keeper_incentive"] = incentive
+        loan["reserve_absorbed"] = absorbed
+        loan["writeoff"] = net_writeoff
         self._save_loan(loan)
 
         profile = self._get_profile(loan["borrower"])
@@ -883,8 +1135,13 @@ Respond ONLY with this JSON (no markdown, no extra text):
         return {
             "loan_id": loan_id,
             "status": "LIQUIDATED",
-            "seized_collateral": collateral,
-            "principal_written_off": writeoff,
+            "liquidated_by": "keeper" if is_owner else "permissionless",
+            "provably_overdue": provably_overdue,
+            "seized_collateral": seized,
+            "keeper_incentive": incentive,
+            "partial_recovered": already,
+            "loss_reserve_absorbed": absorbed,
+            "principal_written_off": net_writeoff,
             "new_reputation_score": profile["score"],
             "score_penalty": penalty,
         }
@@ -1008,10 +1265,13 @@ Respond ONLY with this JSON (no markdown, no extra text):
             "utilization_bps": self._utilization_bps(),
             "lifetime_interest_wei": int(self.lifetime_interest_wei),
             "lifetime_writeoff_wei": int(self.lifetime_writeoff_wei),
+            "lifetime_late_fees_wei": int(self.lifetime_late_fees_wei),
+            "loss_reserve_wei": int(self.loss_reserve_wei),
             "total_lp_shares": total_shares,
             # wei of pool assets per 1e18 shares (1e18 = par at bootstrap)
             "share_price_wad": (total * 10**18) // total_shares if total_shares > 0 else 10**18,
             "protocol_fee_bps": PROTOCOL_FEE_BPS,
+            "reserve_factor_bps": RESERVE_FACTOR_BPS,
             "protocol_fee_accrued_wei": int(self.protocol_fee_accrued_wei),
         }
 

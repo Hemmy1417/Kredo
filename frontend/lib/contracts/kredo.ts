@@ -175,6 +175,11 @@ class Kredo {
           : null,
       collateral_ratio: (Number(obj.collateral_ratio_bps ?? 15000)) / 10000,
       interest_rate_apr: (Number(obj.interest_rate_bps ?? 2000)) / 10000,
+      // v0.4: partial-repay running total + real on-chain maturity (epochs)
+      amount_repaid: BigInt(obj.amount_repaid ?? 0),
+      disbursed_at_epoch: Number(obj.disbursed_at_epoch ?? 0),
+      due_at_epoch: Number(obj.due_at_epoch ?? 0),
+      grace_until_epoch: Number(obj.grace_until_epoch ?? 0),
     } as Loan;
   }
 
@@ -402,9 +407,12 @@ class Kredo {
       utilization_bps: Number(obj.utilization_bps ?? 0),
       lifetime_interest_wei: BigInt(obj.lifetime_interest_wei ?? 0),
       lifetime_writeoff_wei: BigInt(obj.lifetime_writeoff_wei ?? 0),
+      lifetime_late_fees_wei: BigInt(obj.lifetime_late_fees_wei ?? 0),
+      loss_reserve_wei: BigInt(obj.loss_reserve_wei ?? 0),
       total_lp_shares: BigInt(obj.total_lp_shares ?? 0),
       share_price_wad: BigInt(obj.share_price_wad ?? 10n ** 18n),
       protocol_fee_bps: Number(obj.protocol_fee_bps ?? 1000),
+      reserve_factor_bps: Number(obj.reserve_factor_bps ?? 500),
       protocol_fee_accrued_wei: BigInt(obj.protocol_fee_accrued_wei ?? 0),
     };
   }

@@ -16,6 +16,14 @@ import type {
 
 const AI_RATIONALE_KEY = (addr: string) => `kredo_ai_rationale_${addr.toLowerCase()}`;
 
+/** Compact wei→GEN label for toast copy (accepts number/string/bigint wei). */
+function formatGenLabel(wei: unknown): string {
+  let n: number;
+  try { n = Number(BigInt(wei as any)) / 1e18; } catch { n = Number(wei ?? 0) / 1e18; }
+  if (!isFinite(n)) n = 0;
+  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
 function persistAiRationale(address: string, data: any) {
   try {
     localStorage.setItem(AI_RATIONALE_KEY(address), JSON.stringify({
@@ -344,6 +352,16 @@ export function useRepayLoan() {
       setIsRepaying(false);
       setRepayingLoanId(null);
       const payload = data?.payload;
+      // A partial payment leaves the loan ACTIVE — don't claim it's closed or
+      // record a reputation event (the boost only lands on the full payoff).
+      const isPartial = payload?.payment_type === "partial" || payload?.status === "ACTIVE";
+      if (isPartial) {
+        success("Partial payment received", {
+          description: `Loan #${data.loanId} still open · ${formatGenLabel(payload?.outstanding)} GEN remaining`,
+          action: { label: "View on explorer", onClick: () => window.open(explorerTxUrl(data?.txHash), "_blank") },
+        });
+        return;
+      }
       const to = Number(payload?.new_reputation_score ?? data?.priorScore ?? 0);
       const from = Number(data?.priorScore ?? 0);
       if (address) {
@@ -356,8 +374,11 @@ export function useRepayLoan() {
           loanId: String(data.loanId),
         });
       }
+      const lateFee = BigInt(payload?.late_fee_charged ?? 0);
       success("Loan repaid!", {
-        description: `Collateral refunded · reputation +${Number(payload?.score_boost ?? 0)}`,
+        description:
+          `Collateral refunded · reputation +${Number(payload?.score_boost ?? 0)}` +
+          (lateFee > 0n ? ` · late fee ${formatGenLabel(lateFee)} GEN` : ""),
         action: { label: "View on explorer", onClick: () => window.open(explorerTxUrl(data?.txHash), "_blank") },
       });
     },

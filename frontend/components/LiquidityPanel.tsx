@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Droplets, Loader2, ArrowDownToLine, ArrowUpFromLine, Flame, Coins, TrendingUp, PieChart } from "lucide-react";
+import { Droplets, Loader2, ArrowDownToLine, ArrowUpFromLine, Flame, Coins, TrendingUp, PieChart, ShieldCheck } from "lucide-react";
 import {
   usePoolStats,
   useProtocolParams,
@@ -45,6 +45,9 @@ export function LiquidityPanel() {
   const interestEarned = pool?.lifetime_interest_wei ?? BigInt(0);
   const writeoff = pool?.lifetime_writeoff_wei ?? BigInt(0);
   const feesAccrued = pool?.protocol_fee_accrued_wei ?? BigInt(0);
+  const lossReserve = pool?.loss_reserve_wei ?? BigInt(0);
+  const lateFees = pool?.lifetime_late_fees_wei ?? BigInt(0);
+  const reserveFactorPct = ((pool?.reserve_factor_bps ?? 500) / 100).toFixed(1);
 
   const myShares = position?.shares ?? BigInt(0);
   const myValue = position?.current_value_wei ?? BigInt(0);
@@ -107,6 +110,22 @@ export function LiquidityPanel() {
         <Stat icon={Flame}       label="Written off"      value={`${formatGen(writeoff)} GEN`}     hint="Default losses" />
       </div>
 
+      {/* Prudential buffer — the loss reserve absorbs defaults before LP shares */}
+      <div className="mb-6 rounded-xl border border-accent/20 bg-accent/[0.04] p-4">
+        <div className="flex items-center gap-2 mb-3">
+          <ShieldCheck className="w-4 h-4 text-accent" />
+          <span className="text-sm font-semibold">Loss reserve</span>
+          <span className="text-xs text-muted-foreground">
+            absorbs defaults before any LP feels them
+          </span>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <Stat icon={ShieldCheck} label="Buffer balance" value={`${formatGen(lossReserve)} GEN`} hint={`${reserveFactorPct}% of interest is set aside`} accent />
+          <Stat icon={ArrowDownToLine} label="Late fees collected" value={`${formatGen(lateFees)} GEN`} hint="From overdue payoffs → LPs" />
+          <Stat icon={Flame} label="Net write-offs" value={`${formatGen(writeoff)} GEN`} hint="Losses past the buffer" />
+        </div>
+      </div>
+
       {/* Utilization meter */}
       <div className="mb-6">
         <div className="flex items-center justify-between text-xs text-muted-foreground mb-1.5">
@@ -143,8 +162,9 @@ export function LiquidityPanel() {
           </Button>
         </div>
         <p className="text-[11px] text-muted-foreground">
-          A deposit mints pool shares. 90% of every repaid loan&apos;s interest accrues to the
-          shares automatically — your slice grows without another transaction.
+          A deposit mints pool shares. Most of every repaid loan&apos;s interest accrues to the
+          shares automatically ({reserveFactorPct}% is set aside as a loss reserve, 10% is protocol
+          fee) — your slice grows without another transaction.
         </p>
       </div>
 

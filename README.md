@@ -30,11 +30,15 @@ The borrower controls **neither** the input nor the number: the contract picks t
 
 - **Pinned-evidence reputation scoring** — the contract builds the authoritative evidence URLs (Blockscout's keyless JSON API) from the borrower's **own address**. Borrowers never choose what the AI reads, which closes the score-inflation exploit where flattering pages buy cheaper loans.
 - **Deterministic, fishing-proof scoring** — three hard rules: (1) only the connected wallet can (re)evaluate its own score, so nobody can re-roll a score they don't own; (2) **the footprint score is a fixed formula, not a vibed number** — the panel only *extracts* the hard facts (transaction count, token transfers, ENS, contract flag) and the contract maps them to a score by a published rubric, so the same footprint always yields the same score. There is no lucky high sample to re-roll for, and standing above the footprint is earned only through the deterministic on-chain record (+5 per repaid loan, −20 per default); (3) **zero user-supplied evidence** — the panel reads only the contract-pinned footprint, so you can't verify with someone else's ENS/Gitcoin/history pages, and no user-controlled URL can carry a prompt injection.
-- **A real lending pool, owned by its LPs** — every deposit mints **pool shares** (vault-style); `request_loan` disburses actual principal in the same transaction that escrows the borrower's collateral. On repayment, 90% of the interest lands back in the pool — raising the share price for **every depositor pro-rata, automatically** — and 10% accrues as protocol fee. Any share-holder can withdraw their slice (principal + earned yield) at any time; the owner has no special claim on LP capital.
+- **A real lending pool, owned by its LPs** — every deposit mints **pool shares** (vault-style); `request_loan` disburses actual principal in the same transaction that escrows the borrower's collateral. On repayment the interest is split three ways — most of it raises the share price for **every depositor pro-rata, automatically**, a slice tops up a loss reserve, and 10% accrues as protocol fee. Any share-holder can withdraw their slice (principal + earned yield) at any time; the owner has no special claim on LP capital.
+- **Real, enforced loan maturity** — at origination the contract **fetches the current UTC time** from public keyless clocks under consensus and stamps each loan with a genuine due date + grace window. There is no trusted clock feeder: the timestamp is agreed by validators, and every timing rule below reads from it.
+- **Permissionless, time-proven liquidation** — once a loan clears its due date + grace, **anyone** can liquidate it; the contract re-fetches the time and only proceeds if it can *prove* the loan is overdue. The liquidator earns a small keeper reward from the seized collateral — safe to pay precisely *because* lateness is proven, not asserted, so no one can grief a current borrower. (Loans opened while the clock was unreachable fall back to an owner-keeper.)
+- **Partial repayment** — pay a balance down over time instead of all-or-nothing; the loan stays open, tracking the running total, and settles (collateral refunded, reputation boosted) on the payment that clears it.
+- **Late fees** — repaying after the due date costs a flat 5% of principal, and that fee accrues to LPs.
+- **Loss-reserve buffer** — a fixed share of every interest payment is set aside as a reserve that absorbs default write-offs **before** they socialise onto LP share price; only the leftover is a real loss.
 - **Aggregate solvency guard** — the contract tracks its whole in-force book (`reserve` vs `outstanding principal`) and refuses any loan the idle reserve cannot fund.
 - **Dynamic, experience-rated pricing** — effective APR = base rate (your score) + utilization premium (Aave-style kink: a hotter pool charges more) + prior-default surcharge (+3%/default, capped). Every component is itemised in the loan preview.
-- **Keeper-model liquidation** — owner-only; seized collateral returns to the pool reserve and any undercollateralized shortfall is booked as a transparent write-off. (No liquidation bounty — that design let anyone seize a healthy borrower's collateral.)
-- **Owner-gated admin, fail-closed** — `override_score` (manual KYC), `set_min_reputation`, `claim_protocol_fees`, and `liquidate_loan` all pass through a single `_only_owner` gate that normalizes both sides and refuses everyone if the stored owner is ever blank. Withdrawing liquidity is deliberately **not** on this list — that belongs to the LPs.
+- **Owner-gated admin, fail-closed** — `override_score` (manual KYC), `set_min_reputation`, and `claim_protocol_fees` pass through a single `_only_owner` gate that normalizes both sides and refuses everyone if the stored owner is ever blank. Liquidation is **not** owner-gated in the normal case (it's permissionless once provably overdue); withdrawing liquidity isn't either — that belongs to the LPs.
 - **Score changelog + AI rationale, achievements, loan health chips, filter tabs, protocol stats, notifications, top-borrower leaderboard, live animated backdrop** — the full product surface, not a form over a contract.
 
 ---
@@ -43,8 +47,8 @@ The borrower controls **neither** the input nor the number: the contract picks t
 
 1. **Verify** — one click, nothing to paste. The contract pins your Blockscout footprint (profile + activity counters) from your connected address; validators each fetch it independently; an AI credit-risk analyst **reads the footprint and extracts its facts** — transaction count, token transfers, ENS, contract flag — and the contract maps those facts to a score by a **fixed rubric**, so the same footprint always scores the same (no vibed, re-rollable number). Your Kredo repayment record is then folded in deterministically (+5 per repaid, −20 per default), so behaviour moves your standing after verification.
 2. **Preview** — the contract maps your score to a collateral ratio and quotes the live effective APR, itemised (base + utilization + record).
-3. **Borrow** — post the collateral your score requires; the pool disburses the principal to your wallet on the spot. Elite borrowers post 70% and receive 100%.
-4. **Repay & grow** — return principal + interest; your collateral comes home and your score rises (up to +5). Default and the keeper liquidates: collateral to the pool, write-off booked, score −20, +3% surcharge on your next loan.
+3. **Borrow** — post the collateral your score requires; the pool disburses the principal to your wallet on the spot. Elite borrowers post 70% and receive 100%. The loan is stamped with a real, contract-fetched due date + grace window.
+4. **Repay & grow** — return principal + interest, in full or in installments; pay after the due date and a 5% late fee applies. Your collateral comes home on the payment that clears the balance, and your score rises (up to +5). Default past due + grace and **anyone** can liquidate: collateral to the pool (loss reserve absorbs the shortfall first), score −20, +3% surcharge on your next loan.
 
 ## Score tiers (base terms)
 
@@ -71,11 +75,13 @@ The money side is fully real:
 
 - `deposit_liquidity` — payable; mints pool shares at the live share price (first deposit is 1:1)
 - `withdraw_liquidity(shares)` — **any share-holder** burns shares for their pro-rata slice of pool assets, principal + accrued yield; only the **idle** reserve can leave (principal on active loans is untouchable until repaid)
-- `request_loan` — payable; escrows collateral and **disburses principal** via an EVM external message in the same tx
-- `repay_loan` — payable; principal + 90% of interest back to the pool (the yield distribution — share price rises for every LP), 10% accrued as protocol fee
+- `request_loan` — payable; **fetches UTC now** from public clocks to stamp a real due date, escrows collateral, and **disburses principal** via an EVM external message in the same tx
+- `repay_loan` — payable; supports partial payments and late fees; on the closing payment, principal + most of the interest go back to the pool (the yield distribution — share price rises for every LP), a slice tops up the loss reserve, 10% accrues as protocol fee
+- `liquidate_loan` — **permissionless when the fetched clock proves the loan overdue** (owner-keeper fallback for un-stamped loans); the loss reserve absorbs the shortfall before it socialises across shares, and a non-owner liquidator earns a keeper reward
 - `claim_protocol_fees` — owner collects the fee pot; the only money the owner can touch
-- `liquidate_loan` — owner-only keeper write-off; the loss is socialized across shares
 - `get_lp_position(address)` — shares, share of pool, current redemption value, net deposited, earned yield, withdrawable-now
+
+The clock itself is a Intelligent-Contract primitive: `_utc_now()` fetches epoch seconds from three independent keyless time APIs under `gl.eq_principle.prompt_comparative`, agrees them to the minute across validators, and returns 0 (never raises) when no source can be trusted — so a clock outage degrades safely (no false late fees, no false liquidations) instead of bricking the pool.
 
 All internal accounting is in **basis points and wei** (integers) so 1e18-scale amounts never lose precision to Python floats.
 
@@ -87,11 +93,12 @@ The pool is a vault its depositors own, not a donation faucet:
   **pool shares** (`lp_shares`), minted at the live share price: the first deposit is 1:1;
   after that `shares = amount × total_shares / pool_assets`, where pool assets = idle
   reserve + principal out on active loans. A deposit never dilutes or enriches anyone.
-- **Yield distribution.** `repay_loan` returns principal + 90% of the interest to the pool.
+- **Yield distribution.** `repay_loan` returns principal + the LP share of interest to the pool.
   Because pool assets rise while shares outstanding don't, the share price climbs — that one
   line **is** the pro-rata yield distribution, with no claiming transaction and no dust loops.
-  The other 10% accrues as protocol fee, claimable only by the owner. Write-offs from
-  defaults lower pool assets the same way, so losses are socialized honestly too.
+  Interest is split three ways: most to LP share price, a 5% loss-reserve cut, and a 10%
+  protocol fee claimable only by the owner. Write-offs from defaults lower pool assets the same
+  way — but the loss reserve absorbs the shortfall first, so LPs feel only what's left past it.
 - **Decentralized withdrawals.** `withdraw_liquidity(shares)` is open to **any**
   share-holder and pays their pro-rata slice — idle capital plus earned yield. Only the idle
   reserve can leave (capital on active loans returns as borrowers repay), so the in-force
@@ -117,22 +124,23 @@ can't skew the share price — the classic vault inflation attack has no lever h
 - **The score — consensus, not an operator.** A score is written only under validator
   consensus (bucketed equivalence on score band + risk tier). An unreachable footprint
   scores LOW by explicit instruction — fail-closed: an outage can never mint credit.
-- **The keeper — trusted for timing, never for money.** Studionet exposes no wall clock,
-  so "past due" cannot be proven on-chain; the owner acts as keeper and determines default
-  off-chain. What bounds that trust is the money flow: liquidation sends **100% of seized
-  collateral to the LP pool** — the owner receives none of it — and books **no protocol
-  fee**, whereas a repayment would have earned the owner 10% of the interest. Liquidating
-  a healthy loan therefore *costs* the keeper revenue and pays them nothing. Liquidation
-  is also restricted to ACTIVE loans and books its write-off transparently.
+- **Timing — proven on-chain, not asserted by a keeper.** Each loan is stamped with a real
+  due date the contract *fetched* from public clocks at origination, agreed across validators.
+  Liquidation re-fetches the time and proceeds only if it can prove the loan is past due +
+  grace — at which point it is **permissionless**: anyone can call it, and a non-owner
+  liquidator earns a small keeper reward from the seized collateral. Because lateness is
+  proven, that reward can't be gamed to seize a healthy borrower's collateral. There is no
+  trusted default-caller in the normal path; the owner is only a fallback for loans opened
+  while the clock was unreachable.
 - **The pool — owned by its LPs.** The owner's only claim on contract funds is the accrued
   10% fee pot (`claim_protocol_fees`). Deposits, yield, and withdrawals require no trust in
-  the owner at all.
+  the owner at all. Defaults hit the loss-reserve buffer first, so LPs feel only the true
+  shortfall past it.
 
 ## Honest boundaries
 
-- **No wall-clock on Studionet** — loan due dates are advisory (tracked client-side); the keeper determines default off-chain. A production deploy would source time from a validator oracle and open liquidation past a proven due block.
+- **Maturity comes from fetched time, not a native clock** — Studionet's GenVM has no wall-clock, so Kredo fetches UTC from public time APIs under consensus and stamps each loan with a real due date. This is as trustless as the sources are honest (three independent APIs, agreed to the minute); if none can be trusted at origination the loan falls back to owner-keeper handling, and the clock never *raises* — an outage degrades safely to "no late fee, no liquidation" rather than mispricing or bricking anything.
 - **Footprint = Ethereum mainnet** — a fresh Studionet wallet scores low by design. That's the guardrail working: no history, no undercollateralized credit.
-- **Single-owner keeper for liquidation** — determining default is one trusted role (no on-chain clock to prove lateness); a production version would decentralize the keeper. LP capital, by contrast, is now fully shareholder-owned — deposits, yield, and withdrawals need no trust in the owner.
 - **Utilization-locked exits** — an LP can only withdraw from the idle reserve; at 100% utilization they must wait for repayments. That's the standard peer-to-pool trade-off, surfaced in the UI rather than hidden.
 
 ## Project structure
@@ -159,11 +167,11 @@ Kredo/
 
 ## Contract
 
-- **Address:** `0x958c24C5484E1C236EA3bfB5d4048d163558e8bb`
+- **Address:** `0x34E031c4DC34d0159376323FD463601f87B8fA08` (v0.4 — enforced maturity, partial repay, late fees, permissionless liquidation, loss reserve)
 - **Network:** GenLayer Studionet
-- **Open in Studio:** [GenLayer Studio](https://studio.genlayer.com/?import-contract=0x958c24C5484E1C236EA3bfB5d4048d163558e8bb)
+- **Open in Studio:** [GenLayer Studio](https://studio.genlayer.com/?import-contract=0x34E031c4DC34d0159376323FD463601f87B8fA08)
 
-Stress-tested end-to-end on-chain (on the prior deployment; the scoring/lending logic is unchanged): pinned footprint scored a real mainnet address 94/100 under 5/5 validator consensus; third-party evaluation attempt rejected by the self-evaluation guard; a self-evaluation that attached a whale's footprint URL as "supporting evidence" was accepted but scored the wallet's own thin footprint (31/100) — the injected URL never reached the panel; principal disbursement, utilization premium, solvency refusal, repayment interest booking, and default write-off all verified with balance checks. The LP share model ships on the address above with the deployed source verified byte-identical to this repo (`genlayer code`) and the full share/yield/withdrawal surface covered by the direct tests.
+The full surface is covered by **53 direct-mode tests** (pytest), including the v0.4 additions: on-chain due-date stamping, partial-repayment accumulation and settlement, past-due late fees, permissionless-when-provably-overdue liquidation with the owner-keeper fallback, the keeper incentive, and loss-reserve absorption ahead of any LP write-off. Stress-tested end-to-end on-chain (scoring/lending logic unchanged across versions): pinned footprint scored a real mainnet address 94/100 under 5/5 validator consensus; third-party evaluation rejected by the self-evaluation guard; a self-evaluation that attached a whale's footprint URL as "supporting evidence" was accepted but scored the wallet's own thin footprint (31/100) — the injected URL never reached the panel; principal disbursement, utilization premium, solvency refusal, repayment interest booking, and default write-off all verified with balance checks.
 
 > **GenVM lessons baked in (July 2026).** Wallet payouts go through an empty `@gl.evm.contract_interface` proxy (`emit_transfer` at a plain wallet strands value). `Address()` must never re-wrap an `Address`-typed storage field. Every address boundary is normalized (`str → strip → lower`) because CLI args arrive as Address objects and storage keys are case-sensitive.
 

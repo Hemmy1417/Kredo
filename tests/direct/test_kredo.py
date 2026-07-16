@@ -512,7 +512,8 @@ def test_protocol_fee_accrues_and_only_owner_claims(module, contract):
     out = _repaid_cycle(module, contract)
     fee = out["protocol_fee"]
     assert fee > 0
-    assert out["interest_to_lps"] + fee == out["interest_booked"]
+    # interest now splits three ways: LP yield + protocol fee + loss-reserve cut
+    assert out["interest_to_lps"] + fee + out["loss_reserve_added"] == out["interest_booked"]
     assert contract.get_pool_stats()["protocol_fee_accrued_wei"] == fee
 
     _as(module, LP_A, 0)
@@ -667,22 +668,20 @@ def test_repay_returns_principal_plus_interest_and_refunds_collateral(module, co
     assert out["collateral_refunded"] == required
     stats = contract.get_pool_stats()
     assert stats["outstanding_principal_wei"] == 0
-    # reserve back to 10 GEN + the LP slice of interest; the fee sits apart
-    fee = loan["interest_amount"] * 1000 // 10000
+    # interest splits three ways: protocol fee, loss-reserve cut, LP yield
+    interest = loan["interest_amount"]
+    fee = interest * 1000 // 10000
+    reserve_cut = interest * 500 // 10000
+    lp_interest = interest - fee - reserve_cut
     assert out["protocol_fee"] == fee
-    assert out["interest_to_lps"] == loan["interest_amount"] - fee
-    assert stats["liquidity_reserve_wei"] == 10 * GEN + loan["interest_amount"] - fee
+    assert out["loss_reserve_added"] == reserve_cut
+    assert out["interest_to_lps"] == lp_interest
+    # reserve = principal back + LP slice; the fee + reserve cut sit apart
+    assert stats["liquidity_reserve_wei"] == 10 * GEN + lp_interest
+    assert stats["loss_reserve_wei"] == reserve_cut
     assert stats["protocol_fee_accrued_wei"] == fee
-    assert stats["lifetime_interest_wei"] == loan["interest_amount"]
+    assert stats["lifetime_interest_wei"] == interest
     assert contract.get_reputation(BORROWER)["total_loans_repaid"] == 1
-
-
-def test_repay_rejects_underpayment(module, contract):
-    _fund(module, contract, 10 * GEN)
-    loan, _ = _open_loan(module, contract, score=90, loan=GEN)
-    _as(module, BORROWER, loan["repayment_amount"] - 1)
-    with pytest.raises(module.gl.vm.UserError, match="Insufficient repayment"):
-        contract.repay_loan(loan["loan_id"], loan["repayment_amount"])
 
 
 def test_repay_only_by_borrower(module, contract):
@@ -716,3 +715,185 @@ def test_liquidate_seizes_collateral_to_reserve_and_books_writeoff(module, contr
     prof = contract.get_reputation(BORROWER)
     assert prof["total_loans_defaulted"] == 1
     assert prof["score"] < 90                               # penalised
+
+
+# ── v0.4: real maturity, partial repay, late fees, permissionless liquidation ─
+#
+# The clock is fetched on-chain from public time sources; in direct mode the
+# stub renders no readable clock, so _utc_now() returns 0 (a loan then has no
+# on-chain due date and falls back to the owner-keeper). To exercise the timed
+# paths we override the instance's _utc_now to a fixed epoch and advance it.
+
+CLOCK_NOW = 1_800_000_000        # a fixed "now" well past MIN_SANE_EPOCH
+
+
+def _set_clock(contract, epoch):
+    # instance attribute shadows the bound method for self._utc_now() lookups
+    contract._utc_now = lambda: epoch
+
+
+def test_loan_stamps_real_due_date_when_clock_available(module, contract):
+    _fund(module, contract, 10 * GEN)
+    _set_clock(contract, CLOCK_NOW)
+    out, required = _open_loan(module, contract, score=90, loan=GEN)  # duration 30d
+    assert out["disbursed_at_epoch"] == CLOCK_NOW
+    assert out["due_at_epoch"] == CLOCK_NOW + 30 * 86400
+    assert out["grace_until_epoch"] == CLOCK_NOW + 30 * 86400 + 3 * 86400
+    stored = contract._get_loan(out["loan_id"])
+    assert stored["due_at_epoch"] == CLOCK_NOW + 30 * 86400
+    assert stored["amount_repaid"] == 0
+
+
+def test_loan_has_no_due_date_when_clock_down(module, contract):
+    # default stub → _utc_now()==0 → loan carries no enforceable maturity
+    _fund(module, contract, 10 * GEN)
+    out, required = _open_loan(module, contract, score=90, loan=GEN)
+    assert out["due_at_epoch"] == 0
+    assert out["grace_until_epoch"] == 0
+
+
+def test_partial_repayment_accumulates_and_keeps_active(module, contract):
+    _fund(module, contract, 10 * GEN)
+    _set_clock(contract, CLOCK_NOW)
+    loan, required = _open_loan(module, contract, score=90, loan=GEN)
+    total = loan["repayment_amount"]
+    part = total // 3
+    _as(module, BORROWER, part)
+    out = contract.repay_loan(loan["loan_id"], part)
+    _as(module, BORROWER, 0)
+    assert out["status"] == "ACTIVE"
+    assert out["payment_type"] == "partial"
+    assert out["amount_repaid"] == part
+    assert out["outstanding"] == total - part
+    # loan stays open, collateral NOT refunded yet, no reputation boost yet
+    assert contract._get_loan(loan["loan_id"])["status"] == "ACTIVE"
+    assert module.gl._emit.total_to(BORROWER) == GEN        # only the disbursal
+    assert contract.get_reputation(BORROWER)["total_loans_repaid"] == 0
+    # exposure still on the book until the loan actually closes
+    assert contract.get_pool_stats()["outstanding_principal_wei"] == GEN
+
+
+def test_partial_then_full_closes_and_refunds(module, contract):
+    _fund(module, contract, 10 * GEN)
+    _set_clock(contract, CLOCK_NOW)
+    loan, required = _open_loan(module, contract, score=90, loan=GEN)
+    total = loan["repayment_amount"]
+    part = total // 3
+    _as(module, BORROWER, part)
+    contract.repay_loan(loan["loan_id"], part)
+    remaining = total - part
+    _as(module, BORROWER, remaining)
+    out = contract.repay_loan(loan["loan_id"], remaining)
+    _as(module, BORROWER, 0)
+    assert out["status"] == "REPAID"
+    assert out["payment_type"] == "full"
+    assert out["amount_repaid"] == total
+    assert out["collateral_refunded"] == required           # overpay 0
+    assert contract.get_reputation(BORROWER)["total_loans_repaid"] == 1
+    assert contract.get_pool_stats()["outstanding_principal_wei"] == 0
+
+
+def test_partial_below_minimum_rejected(module, contract):
+    _fund(module, contract, 10 * GEN)
+    _set_clock(contract, CLOCK_NOW)
+    loan, required = _open_loan(module, contract, score=90, loan=GEN)
+    tiny = 10 ** 14                                          # 0.0001 GEN < min
+    _as(module, BORROWER, tiny)
+    with pytest.raises(module.gl.vm.UserError, match="too small"):
+        contract.repay_loan(loan["loan_id"], tiny)
+
+
+def test_late_fee_charged_past_due(module, contract):
+    _fund(module, contract, 10 * GEN)
+    _set_clock(contract, CLOCK_NOW)
+    loan, required = _open_loan(module, contract, score=90, loan=GEN)
+    _set_clock(contract, loan["due_at_epoch"] + 1)          # now past due
+    late_fee = GEN * 500 // 10000                           # 5% of principal
+    total_owed = loan["repayment_amount"] + late_fee
+    # paying only the base is now a PARTIAL — the late fee is genuinely owed
+    _as(module, BORROWER, loan["repayment_amount"])
+    part = contract.repay_loan(loan["loan_id"], loan["repayment_amount"])
+    assert part["status"] == "ACTIVE"
+    assert part["outstanding"] == late_fee
+    # top up the late fee to close
+    _as(module, BORROWER, late_fee)
+    out = contract.repay_loan(loan["loan_id"], late_fee)
+    _as(module, BORROWER, 0)
+    assert out["status"] == "REPAID"
+    assert out["past_due"] is True
+    assert out["late_fee_charged"] == late_fee
+    assert contract.get_pool_stats()["lifetime_late_fees_wei"] == late_fee
+
+
+def test_no_late_fee_when_clock_unreadable(module, contract):
+    _fund(module, contract, 10 * GEN)
+    _set_clock(contract, CLOCK_NOW)
+    loan, required = _open_loan(module, contract, score=90, loan=GEN)
+    _set_clock(contract, 0)                                 # clock down at repay
+    _as(module, BORROWER, loan["repayment_amount"])
+    out = contract.repay_loan(loan["loan_id"], loan["repayment_amount"])
+    assert out["status"] == "REPAID"
+    assert out["past_due"] is False
+    assert out["late_fee_charged"] == 0
+
+
+def test_permissionless_liquidation_when_provably_overdue(module, contract):
+    _fund(module, contract, 10 * GEN)
+    _set_clock(contract, CLOCK_NOW)
+    loan, required = _open_loan(module, contract, score=90, loan=GEN)
+    _set_clock(contract, loan["grace_until_epoch"] + 1)     # past due + grace
+    _as(module, LIQUIDATOR, 0)                              # a third party, not owner
+    out = contract.liquidate_loan(loan["loan_id"])
+    assert out["status"] == "LIQUIDATED"
+    assert out["liquidated_by"] == "permissionless"
+    assert out["provably_overdue"] is True
+    incentive = required * 500 // 10000                     # 5% of seized collateral
+    assert out["keeper_incentive"] == incentive
+    assert out["seized_collateral"] == required - incentive
+    assert module.gl._emit.total_to(LIQUIDATOR) == incentive
+
+
+def test_liquidation_blocked_before_overdue_for_nonowner(module, contract):
+    _fund(module, contract, 10 * GEN)
+    _set_clock(contract, CLOCK_NOW)
+    loan, required = _open_loan(module, contract, score=90, loan=GEN)
+    _as(module, LIQUIDATOR, 0)
+    # inside the term → not overdue
+    _set_clock(contract, loan["due_at_epoch"] - 10)
+    with pytest.raises(module.gl.vm.UserError, match="not provably overdue"):
+        contract.liquidate_loan(loan["loan_id"])
+    # past due but still inside the grace window → still not liquidatable
+    _set_clock(contract, loan["due_at_epoch"] + 1)
+    with pytest.raises(module.gl.vm.UserError, match="not provably overdue"):
+        contract.liquidate_loan(loan["loan_id"])
+
+
+def test_owner_keeper_fallback_when_no_due_date(module, contract):
+    # clock down at origination → due=0 → only the owner-keeper can liquidate
+    _fund(module, contract, 10 * GEN)
+    loan, required = _open_loan(module, contract, score=90, loan=GEN)
+    assert loan["due_at_epoch"] == 0
+    _as(module, LIQUIDATOR, 0)
+    with pytest.raises(module.gl.vm.UserError, match="only the owner-keeper"):
+        contract.liquidate_loan(loan["loan_id"])
+    _as(module, OWNER, 0)
+    out = contract.liquidate_loan(loan["loan_id"])
+    assert out["liquidated_by"] == "keeper"
+    assert out["keeper_incentive"] == 0                     # keeper takes no cut
+
+
+def test_loss_reserve_absorbs_shortfall_before_writeoff(module, contract):
+    _fund(module, contract, 10 * GEN)
+    contract.loss_reserve_wei = module.u256(GEN)            # 1 GEN buffer seeded
+    _set_clock(contract, CLOCK_NOW)
+    loan, required = _open_loan(module, contract, score=90, loan=GEN)  # 0.3 GEN gap
+    _set_clock(contract, loan["grace_until_epoch"] + 1)
+    _as(module, OWNER, 0)                                   # owner path → no incentive
+    out = contract.liquidate_loan(loan["loan_id"])
+    gap = GEN - required
+    assert out["loss_reserve_absorbed"] == gap
+    assert out["principal_written_off"] == 0               # LPs feel nothing
+    stats = contract.get_pool_stats()
+    assert stats["loss_reserve_wei"] == GEN - gap
+    assert stats["lifetime_writeoff_wei"] == 0
+    assert stats["liquidity_reserve_wei"] == 10 * GEN      # reserve made whole

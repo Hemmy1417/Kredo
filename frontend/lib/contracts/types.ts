@@ -11,10 +11,15 @@ export interface Loan {
   interest_rate_apr: number;
   interest_amount: bigint;
   repayment_amount: bigint;
+  amount_repaid: bigint;          // cumulative partial repayments (wei)
   duration_days: number;
   reputation_score_at_origination: number;
   status: "ACTIVE" | "REPAID" | "LIQUIDATED";
   created_at: string;
+  // v0.4 real-maturity fields (0 when the clock was down at origination)
+  disbursed_at_epoch: number;
+  due_at_epoch: number;
+  grace_until_epoch: number;
 }
 
 export interface ReputationProfile {
