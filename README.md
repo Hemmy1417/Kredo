@@ -10,6 +10,22 @@ Traditional DeFi lending demands 150% collateral because chains can't tell a str
 
 ---
 
+## The difference: history you can't fake, not documents you submit
+
+Most "AI lending" protocols ask you to **prove who you are** — upload KYC documents, hash them, put the proofs on-chain. Kredo asks a different question, and answers it itself: **what have you actually done on-chain?**
+
+| | Document-KYC AI lending | **Kredo** |
+|---|---|---|
+| **Who picks the evidence** | The borrower uploads their documents | The contract derives the source from your address — you supply nothing |
+| **Can it be gamed** | Hashing proves a document is *unaltered*, not *true* | Your on-chain footprint is append-only and costly to forge |
+| **How the score is set** | An AI *generates* a credit offer — a black-box number | A published rubric maps extracted facts → score; same footprint, same score, **auditable** |
+| **Attack surface** | User-supplied documents feed the AI | **Zero** — no user-controlled input ever reaches the panel |
+| **Onboarding & privacy** | KYC flow; PII handled even when hashed | One wallet click, nothing to upload, no PII in the pipeline |
+
+The borrower controls **neither** the input nor the number: the contract picks the evidence, and a fixed formula sets the score. A hashed document proves a *file* wasn't tampered with — not that it's genuine; Kredo sidesteps the whole question by reading your history instead of trusting a claim about it. The honest scope: Kredo underwrites **crypto-native** reputation (a wallet with no on-chain history scores low, by design) — trustlessly, with nothing about your creditworthiness requiring trust in us.
+
+---
+
 ## Features
 
 - **Pinned-evidence reputation scoring** — the contract builds the authoritative evidence URLs (Blockscout's keyless JSON API) from the borrower's **own address**. Borrowers never choose what the AI reads, which closes the score-inflation exploit where flattering pages buy cheaper loans.
