@@ -186,10 +186,15 @@ def _as(module, sender, value=0):
     module.gl.message.value = value
 
 
-def _prime(module, score, tier="MEDIUM"):
-    module.gl.eq_principle.canned = json.dumps(
-        {"score": score, "summary": "stub", "risk_tier": tier, "flags": []}
-    )
+def _prime(module, tx=0, tt=0, ens=False, is_contract=False, reachable=True):
+    """Prime the panel's EXTRACTION output. The contract computes the score from
+    these metrics via its fixed rubric, so tests prime facts, not scores."""
+    module.gl.eq_principle.canned = json.dumps({
+        "transaction_count": tx, "token_transfer_count": tt,
+        "has_ens": ens, "is_contract": is_contract,
+        "footprint_reachable": reachable,
+        "summary": "stub", "flags": [],
+    })
 
 
 # ── Pinned on-chain footprint (the flagship hardening) ───────────────────────
@@ -228,28 +233,29 @@ def test_evaluate_requires_real_address(module, contract):
 def test_evaluate_rejects_third_party(module, contract):
     # strict self-evaluation: nobody can (re)roll a score they don't own —
     # that would allow griefing downgrades or dice-rolling someone's tier
-    _prime(module, 80, "LOW")
+    _prime(module, tx=2000, tt=200)
     _as(module, OWNER, 0)                       # owner is NOT exempt
     with pytest.raises(module.gl.vm.UserError, match="wallet you are connected"):
         contract.evaluate_identity(BORROWER, [])
 
 
 def test_evaluate_scores_from_pinned_footprint(module, contract):
-    _prime(module, 80, "LOW")
+    _prime(module, tx=2000, tt=200)             # 72 + 8 = 80 by the rubric
     _as(module, BORROWER, 0)                    # self-evaluation only
     out = contract.evaluate_identity(BORROWER, [])
     assert out["score"] == 80
+    assert out["footprint_metrics"]["transaction_count"] == 2000
     assert out["pinned_footprint"][0].startswith("https://eth.blockscout.com/api/v2/addresses/")
-    # the authoritative footprint reached the panel input, not user URLs
-    assert "AUTHORITATIVE ON-CHAIN FOOTPRINT" in module.gl.eq_principle.last_input
-    assert "contract-pinned" in module.gl.eq_principle.last_input
+    # the contract-pinned footprint reached the panel input, not user URLs
+    assert "CONTRACT-PINNED FOOTPRINT" in module.gl.eq_principle.last_input
+    assert "Blockscout" in module.gl.eq_principle.last_input
 
 
 def test_user_supplied_urls_never_reach_the_panel(module, contract):
     # identity_sources is wire-compat only: whatever the caller sends, no
     # user-controlled URL is fetched or shown to the AI — verification is
     # tied to the wallet's own footprint, and the injection surface is zero
-    _prime(module, 80, "LOW")
+    _prime(module, tx=2000, tt=200)
     _as(module, BORROWER, 0)
     contract.evaluate_identity(BORROWER, [
         {"type": "ens", "url": "https://evil.example/impersonation", "label": "someone else's ENS"},
@@ -258,7 +264,7 @@ def test_user_supplied_urls_never_reach_the_panel(module, contract):
     panel_input = module.gl.eq_principle.last_input
     assert "evil.example" not in panel_input
     assert "SUPPORTING" not in panel_input
-    assert "AUTHORITATIVE ON-CHAIN FOOTPRINT" in panel_input
+    assert "CONTRACT-PINNED FOOTPRINT" in panel_input
     # and the profile records no user-supplied sources
     assert contract.get_reputation(BORROWER)["identity_sources"] == []
 
@@ -266,40 +272,46 @@ def test_user_supplied_urls_never_reach_the_panel(module, contract):
 def test_repayment_record_folds_in_deterministically(module, contract):
     # The panel scores the FOOTPRINT only; the repayment record is applied by the
     # contract, deterministically (+5 per repaid), not by the panel.
-    _prime(module, 50)
+    _prime(module, tx=500)                                          # rubric → 58
     _as(module, BORROWER, 0)
     contract.evaluate_identity(BORROWER, [])
-    assert contract.get_reputation(BORROWER)["score"] == 50        # 0 repaid → base only
-    prof = contract.get_reputation(BORROWER)
+    assert contract.get_reputation(BORROWER)["score"] == 58         # 0 repaid → base only
+    prof = contract._get_profile(BORROWER)
     prof["total_loans_repaid"] = 3
     contract._save_profile(prof)
-    _prime(module, 50)                                              # same footprint roll
-    contract.evaluate_identity(BORROWER, [])
-    assert contract.get_reputation(BORROWER)["score"] == 65         # 50 + 5*3, deterministic
+    contract.evaluate_identity(BORROWER, [])                        # same footprint
+    assert contract.get_reputation(BORROWER)["score"] == 73         # 58 + 5*3, deterministic
     # the panel prompt never sees the track record — footprint only
     assert "Loans repaid" not in module.gl.eq_principle.last_input
 
 
-def test_reverification_cannot_raise_the_score(module, contract):
-    """The reported exploit: re-verifying must not let a borrower re-roll the panel
-    into a higher score (buying a cheaper collateral tier). A re-roll can confirm or
-    lower the footprint base — never raise it."""
-    _prime(module, 40)
+def test_reverification_is_deterministic_no_fishing(module, contract):
+    """The reported exploit: re-verifying let a borrower re-roll the panel into a
+    higher score. With deterministic scoring the same footprint yields the SAME
+    score every time — there is no lucky high sample to fish for."""
+    _prime(module, tx=500, tt=40)                                  # rubric → 58 + 4 = 62
     _as(module, BORROWER, 0)
     contract.evaluate_identity(BORROWER, [])
-    assert contract.get_reputation(BORROWER)["footprint_score"] == 40
-    assert contract.get_reputation(BORROWER)["score"] == 40
+    assert contract.get_reputation(BORROWER)["footprint_score"] == 62
+    # re-verify the SAME footprint any number of times — the score never drifts
+    for _ in range(3):
+        contract.evaluate_identity(BORROWER, [])
+        assert contract.get_reputation(BORROWER)["footprint_score"] == 62
+        assert contract.get_reputation(BORROWER)["score"] == 62
 
-    # borrower fishes for a lucky high sample (85) — it MUST NOT stick
-    _prime(module, 85)
-    contract.evaluate_identity(BORROWER, [])
-    assert contract.get_reputation(BORROWER)["footprint_score"] == 40   # capped
-    assert contract.get_reputation(BORROWER)["score"] == 40
 
-    # a genuinely lower roll (30) IS honoured — you can only ever go down on a re-roll
-    _prime(module, 30)
+def test_unreachable_footprint_scores_zero(module, contract):
+    _prime(module, tx=9999, reachable=False)      # even huge counts: no reachable data
+    _as(module, BORROWER, 0)
     contract.evaluate_identity(BORROWER, [])
-    assert contract.get_reputation(BORROWER)["footprint_score"] == 30
+    assert contract.get_reputation(BORROWER)["footprint_score"] == 0
+
+
+def test_contract_address_is_capped(module, contract):
+    _prime(module, tx=5000, tt=500, ens=True, is_contract=True)   # would be 86 as a wallet
+    _as(module, BORROWER, 0)
+    contract.evaluate_identity(BORROWER, [])
+    assert contract.get_reputation(BORROWER)["footprint_score"] == 25
 
 
 # ── Score → collateral ratio / interest rate tiers ───────────────────────────
@@ -571,9 +583,13 @@ def test_deposit_too_small_to_mint_a_share_rejected(module, contract):
 # ── Loan lifecycle ───────────────────────────────────────────────────────────
 
 def _score(module, contract, score):
-    _prime(module, score)
-    _as(module, BORROWER, 0)      # strict self-evaluation
-    contract.evaluate_identity(BORROWER, [])
+    # loan-lifecycle tests just need the borrower AT a given score; set it
+    # directly rather than reverse-engineering footprint metrics through the rubric.
+    prof = contract._get_profile(BORROWER)
+    prof["score"] = score
+    prof["footprint_score"] = score
+    prof["verified"] = True
+    contract._save_profile(prof)
 
 
 def _fund(module, contract, amount):
