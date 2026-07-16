@@ -13,7 +13,7 @@ Traditional DeFi lending demands 150% collateral because chains can't tell a str
 ## Features
 
 - **Pinned-evidence reputation scoring** — the contract builds the authoritative evidence URLs (Blockscout's keyless JSON API) from the borrower's **own address**. Borrowers never choose what the AI reads, which closes the score-inflation exploit where flattering pages buy cheaper loans.
-- **All verification tied to one wallet** — two hard rules: (1) only the connected wallet can (re)evaluate its own score, so nobody can re-roll a score they don't own (no griefing downgrades, no dice-rolling consensus for a cheaper tier); (2) **zero user-supplied evidence** — the panel only ever reads the contract-pinned footprint plus the in-protocol repayment record, so you can't verify with someone else's ENS/Gitcoin/history pages, and there is no user-controlled URL to carry a prompt injection.
+- **Wallet-tied and fishing-proof scoring** — three hard rules: (1) only the connected wallet can (re)evaluate its own score, so nobody can re-roll a score they don't own; (2) **a re-verification can never RAISE the footprint score** — it may confirm or lower it, but not fish for a lucky high sample, so a borrower cannot re-roll the panel into a cheaper collateral tier; standing above the footprint is earned only through the deterministic on-chain record (+5 per repaid loan, −20 per default); (3) **zero user-supplied evidence** — the panel reads only the contract-pinned footprint, so you can't verify with someone else's ENS/Gitcoin/history pages, and no user-controlled URL can carry a prompt injection.
 - **A real lending pool, owned by its LPs** — every deposit mints **pool shares** (vault-style); `request_loan` disburses actual principal in the same transaction that escrows the borrower's collateral. On repayment, 90% of the interest lands back in the pool — raising the share price for **every depositor pro-rata, automatically** — and 10% accrues as protocol fee. Any share-holder can withdraw their slice (principal + earned yield) at any time; the owner has no special claim on LP capital.
 - **Aggregate solvency guard** — the contract tracks its whole in-force book (`reserve` vs `outstanding principal`) and refuses any loan the idle reserve cannot fund.
 - **Dynamic, experience-rated pricing** — effective APR = base rate (your score) + utilization premium (Aave-style kink: a hotter pool charges more) + prior-default surcharge (+3%/default, capped). Every component is itemised in the loan preview.
@@ -25,7 +25,7 @@ Traditional DeFi lending demands 150% collateral because chains can't tell a str
 
 ## How it works
 
-1. **Verify** — one click, nothing to paste. The contract pins your Blockscout footprint (profile + activity counters) from your connected address; validators each fetch it independently; an AI credit-risk analyst scores the real signals — account age, transaction count, balance, ENS — plus your in-protocol repayment record. Consensus writes the score.
+1. **Verify** — one click, nothing to paste. The contract pins your Blockscout footprint (profile + activity counters) from your connected address; validators each fetch it independently; an AI credit-risk analyst scores the footprint's real signals — account age, transaction count, balance, ENS — and consensus writes it. Your Kredo repayment record is then folded in **deterministically by the contract** (+5 per repaid, −20 per default), so behaviour — not a re-rollable panel — moves your standing after verification.
 2. **Preview** — the contract maps your score to a collateral ratio and quotes the live effective APR, itemised (base + utilization + record).
 3. **Borrow** — post the collateral your score requires; the pool disburses the principal to your wallet on the spot. Elite borrowers post 70% and receive 100%.
 4. **Repay & grow** — return principal + interest; your collateral comes home and your score rises (up to +5). Default and the keeper liquidates: collateral to the pool, write-off booked, score −20, +3% surcharge on your next loan.
@@ -143,9 +143,9 @@ Kredo/
 
 ## Contract
 
-- **Address:** `0x9AaF3785D411C6782D2138C67A5524878F31E716`
+- **Address:** `0xF0e9e06E746c1669211C3621F910779c4f1f2e8f`
 - **Network:** GenLayer Studionet
-- **Open in Studio:** [GenLayer Studio](https://studio.genlayer.com/?import-contract=0x9AaF3785D411C6782D2138C67A5524878F31E716)
+- **Open in Studio:** [GenLayer Studio](https://studio.genlayer.com/?import-contract=0xF0e9e06E746c1669211C3621F910779c4f1f2e8f)
 
 Stress-tested end-to-end on-chain (on the prior deployment; the scoring/lending logic is unchanged): pinned footprint scored a real mainnet address 94/100 under 5/5 validator consensus; third-party evaluation attempt rejected by the self-evaluation guard; a self-evaluation that attached a whale's footprint URL as "supporting evidence" was accepted but scored the wallet's own thin footprint (31/100) — the injected URL never reached the panel; principal disbursement, utilization premium, solvency refusal, repayment interest booking, and default write-off all verified with balance checks. The LP share model ships on the address above with the deployed source verified byte-identical to this repo (`genlayer code`) and the full share/yield/withdrawal surface covered by the direct tests.
 

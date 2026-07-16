@@ -263,17 +263,43 @@ def test_user_supplied_urls_never_reach_the_panel(module, contract):
     assert contract.get_reputation(BORROWER)["identity_sources"] == []
 
 
-def test_evaluate_folds_in_repayment_record(module, contract):
-    # give the borrower a prior repaid loan, then re-score
+def test_repayment_record_folds_in_deterministically(module, contract):
+    # The panel scores the FOOTPRINT only; the repayment record is applied by the
+    # contract, deterministically (+5 per repaid), not by the panel.
     _prime(module, 50)
     _as(module, BORROWER, 0)
     contract.evaluate_identity(BORROWER, [])
+    assert contract.get_reputation(BORROWER)["score"] == 50        # 0 repaid → base only
     prof = contract.get_reputation(BORROWER)
     prof["total_loans_repaid"] = 3
     contract._save_profile(prof)
-    _prime(module, 55)
+    _prime(module, 50)                                              # same footprint roll
     contract.evaluate_identity(BORROWER, [])
-    assert "Loans repaid on Kredo: 3" in module.gl.eq_principle.last_input
+    assert contract.get_reputation(BORROWER)["score"] == 65         # 50 + 5*3, deterministic
+    # the panel prompt never sees the track record — footprint only
+    assert "Loans repaid" not in module.gl.eq_principle.last_input
+
+
+def test_reverification_cannot_raise_the_score(module, contract):
+    """The reported exploit: re-verifying must not let a borrower re-roll the panel
+    into a higher score (buying a cheaper collateral tier). A re-roll can confirm or
+    lower the footprint base — never raise it."""
+    _prime(module, 40)
+    _as(module, BORROWER, 0)
+    contract.evaluate_identity(BORROWER, [])
+    assert contract.get_reputation(BORROWER)["footprint_score"] == 40
+    assert contract.get_reputation(BORROWER)["score"] == 40
+
+    # borrower fishes for a lucky high sample (85) — it MUST NOT stick
+    _prime(module, 85)
+    contract.evaluate_identity(BORROWER, [])
+    assert contract.get_reputation(BORROWER)["footprint_score"] == 40   # capped
+    assert contract.get_reputation(BORROWER)["score"] == 40
+
+    # a genuinely lower roll (30) IS honoured — you can only ever go down on a re-roll
+    _prime(module, 30)
+    contract.evaluate_identity(BORROWER, [])
+    assert contract.get_reputation(BORROWER)["footprint_score"] == 30
 
 
 # ── Score → collateral ratio / interest rate tiers ───────────────────────────
