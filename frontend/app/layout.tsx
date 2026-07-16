@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, Space_Grotesk } from "next/font/google";
+import { Inter, Playfair_Display } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 import { LiveBackdrop } from "@/components/LiveBackdrop";
@@ -11,8 +11,8 @@ const inter = Inter({
   display: "swap",
 });
 
-// Font for titles (Lineca alternative per brand guidelines)
-const spaceGrotesk = Space_Grotesk({
+// Display serif — private-bank register (score numerals, headings)
+const playfair = Playfair_Display({
   subsets: ["latin"],
   variable: "--font-display",
   display: "swap",
@@ -31,7 +31,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#9B6AF6", // GenLayer brand purple
+  themeColor: "#06130d", // Kredo deep forest
 };
 
 export default function RootLayout({
@@ -40,7 +40,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${inter.variable} ${spaceGrotesk.variable}`}>
+    <html lang="en" className={`${inter.variable} ${playfair.variable}`}>
       <body>
         <LiveBackdrop />
         <Providers>{children}</Providers>

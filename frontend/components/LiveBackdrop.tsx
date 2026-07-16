@@ -40,19 +40,19 @@ export function LiveBackdrop() {
         .kredo-blob-a {
           width: 620px; height: 620px;
           top: -180px; left: -160px;
-          background: radial-gradient(circle at 30% 30%, #9B6AF6, transparent 70%);
+          background: radial-gradient(circle at 30% 30%, #D6AC57, transparent 70%);
           animation: kredoDriftA 22s ease-in-out infinite;
         }
         .kredo-blob-b {
           width: 720px; height: 720px;
           top: 20%; right: -220px;
-          background: radial-gradient(circle at 60% 40%, #E37DF7, transparent 70%);
+          background: radial-gradient(circle at 60% 40%, #2E6B52, transparent 70%);
           animation: kredoDriftB 26s ease-in-out infinite;
         }
         .kredo-blob-c {
           width: 560px; height: 560px;
           bottom: -180px; left: 30%;
-          background: radial-gradient(circle at 50% 50%, #5A6BFF, transparent 70%);
+          background: radial-gradient(circle at 50% 50%, #E8CE93, transparent 70%);
           animation: kredoDriftC 30s ease-in-out infinite;
         }
         @keyframes kredoDriftA {

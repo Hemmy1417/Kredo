@@ -123,7 +123,7 @@ export function YourScoreCard() {
           </div>
           <div className="h-2 rounded-full bg-white/5 overflow-hidden">
             <div
-              className="h-full rounded-full bg-gradient-to-r from-accent to-purple-400 transition-all"
+              className="h-full rounded-full bg-gradient-to-r from-accent to-amber-200 transition-all"
               style={{ width: `${pct}%` }}
             />
           </div>

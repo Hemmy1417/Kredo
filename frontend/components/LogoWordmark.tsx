@@ -1,7 +1,7 @@
 /**
  * Kredo — the rising notch mark.
  *
- * Two stacked chevrons: the white one is the K's floor, the purple one climbs
+ * Two stacked chevrons: the white one is the K's floor, the gold one climbs
  * past its frame. The score climbing IS the brand.
  *
  * Variants:
@@ -62,13 +62,13 @@ export function Logo({
       />
       <path
         d="M 55 62 L 82 82 L 108 62 L 135 42"
-        stroke="#9B6AF6"
+        stroke="#D6AC57"
         strokeWidth="10"
         strokeLinecap="round"
         strokeLinejoin="round"
         fill="none"
       />
-      <circle cx="135" cy="42" r="8" fill="#9B6AF6" />
+      <circle cx="135" cy="42" r="8" fill="#D6AC57" />
     </svg>
   );
 

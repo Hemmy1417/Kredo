@@ -68,7 +68,7 @@ export default function HomePage() {
                 <span className="relative inline-block">
                   <span
                     style={{
-                      background: "linear-gradient(135deg, #9B6AF6 0%, #E37DF7 100%)",
+                      background: "linear-gradient(135deg, #D6AC57 0%, #E8CE93 100%)",
                       WebkitBackgroundClip: "text",
                       WebkitTextFillColor: "transparent",
                       backgroundClip: "text",
@@ -76,7 +76,7 @@ export default function HomePage() {
                   >
                     your reputation
                   </span>
-                  <span className="absolute -bottom-1 left-0 right-0 h-px opacity-60" style={{ background: "linear-gradient(135deg, #9B6AF6 0%, #E37DF7 100%)" }} />
+                  <span className="absolute -bottom-1 left-0 right-0 h-px opacity-60" style={{ background: "linear-gradient(135deg, #D6AC57 0%, #E8CE93 100%)" }} />
                 </span>
               </h1>
               <p className="text-lg md:text-xl text-muted-foreground leading-relaxed max-w-xl mx-auto">
