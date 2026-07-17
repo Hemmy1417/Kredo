@@ -265,7 +265,9 @@ class Kredo(gl.Contract):
         # Normalise both sides the same way every other address is handled, and
         # FAIL CLOSED: if the stored owner is somehow blank/malformed, nobody
         # passes (an empty owner must never match an empty sender). Gates
-        # override_score, set_min_reputation, claim_protocol_fees, liquidate_loan.
+        # Gates set_min_reputation and claim_protocol_fees — and NOT liquidation
+        # (permissionless once provably overdue) or withdrawals (LP-owned). There
+        # is no owner path to a reputation score at all.
         owner = self._norm_addr(self.owner)
         sender = self._norm_addr(gl.message.sender_address)
         if not owner or sender != owner:
@@ -1180,19 +1182,19 @@ Respond ONLY with this JSON (no markdown, no extra text):
         self._only_owner()
         self.min_reputation_to_borrow = u256(new_minimum)
 
-    @gl.public.write
-    def override_score(self, address: str, new_score: int, reason: str) -> None:
-        """
-        Emergency admin override — e.g. after a manual KYC review.
-        Emits the reason for auditability.
-        """
-        self._only_owner()
-        if new_score < 0 or new_score > 100:
-            raise gl.vm.UserError("Score must be between 0 and 100")
-        profile = self._get_profile(address)
-        profile["score"] = new_score
-        profile["last_updated"] = f"admin_override: {reason}"
-        self._save_profile(profile)
+    # NOTE: there is deliberately NO admin score override. A score is only ever
+    # written by _recompute_score, from the fixed rubric over consensus-extracted
+    # footprint facts plus the borrower's own in-protocol record. Nobody — the
+    # owner included — can set, raise, or lower a wallet's standing by fiat.
+    #
+    # An override_score(address, new_score, reason) existed here and was removed:
+    # it contradicted the product's central claim ("the score is consensus, not an
+    # operator"), and it was a no-op anyway — it wrote `score` while leaving
+    # `footprint_score` alone, so the borrower's very next evaluate_identity /
+    # repay_loan / liquidate_loan called _recompute_score and silently erased it.
+    # Proven on-chain 2026-07-17: override to 90 → one re-verify → back to 49.
+    # Making it durable would have been worse: an owner who can mint a 100 can
+    # borrow at 70% collateral and drain the pool.
 
     # ────────────────────────────────────────────────────────────────────────────
     # VIEWS

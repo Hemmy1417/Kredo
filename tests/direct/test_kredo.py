@@ -330,28 +330,24 @@ def test_interest_rate_tiers(contract):
     assert contract._score_to_interest_rate_bps(90) == 500
 
 
-# ── Admin: owner-only override_score ─────────────────────────────────────────
+# ── Admin: no operator path to a score at all ────────────────────────────────
 
-def test_override_score_owner_only(module, contract):
-    _as(module, LIQUIDATOR, 0)                 # anyone but the owner
-    with pytest.raises(module.gl.vm.UserError, match="owner"):
-        contract.override_score(BORROWER, 100, "self-promotion")
-    # and the score was not written
-    assert contract.get_reputation(BORROWER)["score"] == 0
-
-
-def test_override_score_owner_succeeds(module, contract):
-    _as(module, OWNER, 0)
-    contract.override_score(BORROWER, 88, "manual KYC")
-    prof = contract.get_reputation(BORROWER)
-    assert prof["score"] == 88
-    assert "admin_override" in prof["last_updated"]
-
-
-def test_override_score_rejects_out_of_range(module, contract):
-    _as(module, OWNER, 0)
-    with pytest.raises(module.gl.vm.UserError, match="between 0 and 100"):
-        contract.override_score(BORROWER, 101, "too high")
+def test_no_admin_score_override_exists(module, contract):
+    """Kredo's central claim is that the score is set by a published rubric over
+    consensus-extracted facts — NOT by an operator. An override_score() lived here
+    until 2026-07-17; it contradicted that claim and was a no-op besides (it wrote
+    `score` but not `footprint_score`, so the borrower's next evaluate_identity /
+    repay_loan / liquidate_loan recomputed it away — proven on-chain, 90 → 49).
+    Not even the owner may set a score."""
+    assert not hasattr(contract, "override_score")
+    # the ONLY writer of `score` is the deterministic rubric + in-protocol record
+    _prime(module, tx=500)                                   # rubric → 58
+    _as(module, BORROWER, 0)
+    contract.evaluate_identity(BORROWER, [])
+    assert contract.get_reputation(BORROWER)["score"] == 58
+    _as(module, OWNER, 0)                                    # owner has no lever
+    for name in ("override_score", "set_score", "admin_set_score"):
+        assert not hasattr(contract, name)
 
 
 def test_owner_gate_fails_closed_on_blank_owner(module):
@@ -362,8 +358,18 @@ def test_owner_gate_fails_closed_on_blank_owner(module):
     c = module.Kredo(owner=module.Address(OWNER), min_reputation_to_borrow=25)
     c.owner = ""                                # simulate a blanked owner
     module.gl.message.sender_address = ""       # empty sender must NOT match empty owner
+    # probe the gate through a surviving owner-only method
     with pytest.raises(module.gl.vm.UserError, match="owner"):
-        c.override_score(BORROWER, 100, "fail-open probe")
+        c.set_min_reputation(0)
+
+
+def test_set_min_reputation_is_owner_only(module, contract):
+    _as(module, LIQUIDATOR, 0)                 # anyone but the owner
+    with pytest.raises(module.gl.vm.UserError, match="owner"):
+        contract.set_min_reputation(0)
+    _as(module, OWNER, 0)
+    contract.set_min_reputation(40)
+    assert int(contract.min_reputation_to_borrow) == 40
 
 
 # ── Dynamic pricing helpers (utilization + experience) ───────────────────────
