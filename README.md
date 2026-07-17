@@ -6,7 +6,7 @@ Traditional DeFi lending demands 150% collateral because chains can't tell a str
 
 **The pitch in one line:** your reputation is your credit history — and you can't fake it, because the contract picks the evidence, not you.
 
-**Live:** [kredo-six.vercel.app](https://kredo-six.vercel.app)
+**Live:** [kredo-psi.vercel.app](https://kredo-psi.vercel.app)
 
 ---
 
