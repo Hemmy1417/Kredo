@@ -732,6 +732,37 @@ def _set_clock(contract, epoch):
     contract._utc_now = lambda: epoch
 
 
+def test_clock_sources_are_only_the_on_chain_proven_ones(module):
+    """Regression guard for a real on-chain failure: timeapi.io serves a clock
+    ~6 minutes behind UTC and worldtimeapi.org won't load from validators at all.
+    Together they tripped the divergence guard so _utc_now() returned 0 forever —
+    every loan silently lost its due date. Only probe-verified sources belong here."""
+    assert module.TIME_SOURCES == [
+        "https://cloudflare.com/cdn-cgi/trace",
+        "https://eth.blockscout.com/api/v2/main-page/blocks",
+    ]
+    assert "timeapi.io" not in " ".join(module.TIME_SOURCES)
+    assert "worldtimeapi" not in " ".join(module.TIME_SOURCES)
+
+
+def test_clock_parsers_handle_both_source_shapes(module):
+    cf = "fl=123\nts=1784273522.417\nvisit_scheme=https"
+    assert module._parse_epoch_from_clock(
+        "https://cloudflare.com/cdn-cgi/trace", cf) == 1784273522
+    bs = json.dumps([{"timestamp": "2026-07-17T07:35:11.000000Z", "height": 25550946}])
+    assert module._parse_epoch_from_clock(
+        "https://eth.blockscout.com/api/v2/main-page/blocks", bs) == 1784273711
+    # garbage in → 0 out, so a broken source is skipped rather than trusted
+    assert module._parse_epoch_from_clock("https://cloudflare.com/cdn-cgi/trace", "<html/>") == 0
+    assert module._parse_epoch_from_clock("https://eth.blockscout.com/api/v2/main-page/blocks", "nope") == 0
+
+
+def test_epoch_from_iso_round_trips(module):
+    # the exact shape Blockscout returns
+    assert module._epoch_from_iso("2026-07-17T07:35:11.000000Z") == module._epoch_from_civil(
+        2026, 7, 17, 7, 35, 11)
+
+
 def test_loan_stamps_real_due_date_when_clock_available(module, contract):
     _fund(module, contract, 10 * GEN)
     _set_clock(contract, CLOCK_NOW)
@@ -866,6 +897,29 @@ def test_liquidation_blocked_before_overdue_for_nonowner(module, contract):
     _set_clock(contract, loan["due_at_epoch"] + 1)
     with pytest.raises(module.gl.vm.UserError, match="not provably overdue"):
         contract.liquidate_loan(loan["loan_id"])
+
+
+def test_owner_cannot_liquidate_a_current_loan_with_a_real_due_date(module, contract):
+    """The keeper must NOT be able to seize a healthy borrower's collateral once
+    the loan carries an on-chain due date — that's the whole point of proving
+    lateness. The owner is a fallback only for loans with no due date."""
+    _fund(module, contract, 10 * GEN)
+    _set_clock(contract, CLOCK_NOW)
+    loan, required = _open_loan(module, contract, score=90, loan=GEN)
+    assert loan["due_at_epoch"] > 0                        # real maturity stamped
+    _as(module, OWNER, 0)                                  # the keeper themself
+    with pytest.raises(module.gl.vm.UserError, match="not provably overdue"):
+        contract.liquidate_loan(loan["loan_id"])
+    # …and still refused while merely past due but inside the grace window
+    _set_clock(contract, loan["due_at_epoch"] + 1)
+    with pytest.raises(module.gl.vm.UserError, match="not provably overdue"):
+        contract.liquidate_loan(loan["loan_id"])
+    # once genuinely overdue, the owner may liquidate — via the open path, and
+    # taking no keeper cut for themselves
+    _set_clock(contract, loan["grace_until_epoch"] + 1)
+    out = contract.liquidate_loan(loan["loan_id"])
+    assert out["liquidated_by"] == "permissionless"
+    assert out["keeper_incentive"] == 0
 
 
 def test_owner_keeper_fallback_when_no_due_date(module, contract):

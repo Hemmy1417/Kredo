@@ -81,7 +81,9 @@ The money side is fully real:
 - `claim_protocol_fees` — owner collects the fee pot; the only money the owner can touch
 - `get_lp_position(address)` — shares, share of pool, current redemption value, net deposited, earned yield, withdrawable-now
 
-The clock itself is a Intelligent-Contract primitive: `_utc_now()` fetches epoch seconds from three independent keyless time APIs under `gl.eq_principle.prompt_comparative`, agrees them to the minute across validators, and returns 0 (never raises) when no source can be trusted — so a clock outage degrades safely (no false late fees, no false liquidations) instead of bricking the pool.
+The clock itself is an Intelligent-Contract primitive: `_utc_now()` fetches epoch seconds from two independent keyless sources under `gl.eq_principle.prompt_comparative` — Cloudflare's `/cdn-cgi/trace` and **Ethereum's own latest block timestamp** (via Blockscout), i.e. a clock produced by a decentralised consensus rather than one vendor's server. It cross-checks them, distrusts the reading entirely if they diverge by more than 300s, takes the **earliest** corroborated value (so skew can only ever favour the borrower), and returns 0 — never raises — when no source can be trusted, so an outage degrades safely (no false late fees, no false liquidations) instead of bricking the pool.
+
+> Both sources are **probe-verified from Studionet validators**, and that mattered: the first source list shipped with `timeapi.io` and `worldtimeapi.org`. On-chain probing proved `worldtimeapi.org` won't load at all and **`timeapi.io` serves a clock ~6 minutes behind real UTC** — its disagreement correctly tripped the divergence guard, which meant `_utc_now()` returned 0 on every call and *every loan silently lost its due date*. The safety logic was right; the sources were wrong. Never add a clock source without probing it on-chain first.
 
 All internal accounting is in **basis points and wei** (integers) so 1e18-scale amounts never lose precision to Python floats.
 
@@ -139,7 +141,7 @@ can't skew the share price — the classic vault inflation attack has no lever h
 
 ## Honest boundaries
 
-- **Maturity comes from fetched time, not a native clock** — Studionet's GenVM has no wall-clock, so Kredo fetches UTC from public time APIs under consensus and stamps each loan with a real due date. This is as trustless as the sources are honest (three independent APIs, agreed to the minute); if none can be trusted at origination the loan falls back to owner-keeper handling, and the clock never *raises* — an outage degrades safely to "no late fee, no liquidation" rather than mispricing or bricking anything.
+- **Maturity comes from fetched time, not a native clock** — Studionet's GenVM has no wall-clock, so Kredo fetches UTC under consensus and stamps each loan with a real due date. This is as trustless as the sources are honest: two independent, probe-verified readings (Cloudflare's edge clock and Ethereum's block timestamp) that must corroborate each other within 300s or the reading is discarded. Both would have to be wrong *in the same direction, at the same moment* to shift a due date — and a shift still only matters at the 3-day grace boundary. If neither can be read at origination the loan falls back to owner-keeper handling, and the clock never *raises* — an outage degrades safely to "no late fee, no liquidation" rather than mispricing or bricking anything.
 - **Footprint = Ethereum mainnet** — a fresh Studionet wallet scores low by design. That's the guardrail working: no history, no undercollateralized credit.
 - **Utilization-locked exits** — an LP can only withdraw from the idle reserve; at 100% utilization they must wait for repayments. That's the standard peer-to-pool trade-off, surfaced in the UI rather than hidden.
 
@@ -167,11 +169,11 @@ Kredo/
 
 ## Contract
 
-- **Address:** `0x34E031c4DC34d0159376323FD463601f87B8fA08` (v0.4 — enforced maturity, partial repay, late fees, permissionless liquidation, loss reserve)
+- **Address:** `0xAaC6C69ed4Ac966e342161C45aD039D5D74dcB2d` (v0.4 — enforced maturity, partial repay, late fees, permissionless liquidation, loss reserve)
 - **Network:** GenLayer Studionet
-- **Open in Studio:** [GenLayer Studio](https://studio.genlayer.com/?import-contract=0x34E031c4DC34d0159376323FD463601f87B8fA08)
+- **Open in Studio:** [GenLayer Studio](https://studio.genlayer.com/?import-contract=0xAaC6C69ed4Ac966e342161C45aD039D5D74dcB2d)
 
-The full surface is covered by **53 direct-mode tests** (pytest), including the v0.4 additions: on-chain due-date stamping, partial-repayment accumulation and settlement, past-due late fees, permissionless-when-provably-overdue liquidation with the owner-keeper fallback, the keeper incentive, and loss-reserve absorption ahead of any LP write-off. Stress-tested end-to-end on-chain (scoring/lending logic unchanged across versions): pinned footprint scored a real mainnet address 94/100 under 5/5 validator consensus; third-party evaluation rejected by the self-evaluation guard; a self-evaluation that attached a whale's footprint URL as "supporting evidence" was accepted but scored the wallet's own thin footprint (31/100) — the injected URL never reached the panel; principal disbursement, utilization premium, solvency refusal, repayment interest booking, and default write-off all verified with balance checks.
+The full surface is covered by **57 direct-mode tests** (pytest), including the v0.4 additions: on-chain due-date stamping, partial-repayment accumulation and settlement, past-due late fees, permissionless-when-provably-overdue liquidation with the owner-keeper fallback, the keeper incentive, and loss-reserve absorption ahead of any LP write-off. Stress-tested end-to-end on-chain (scoring/lending logic unchanged across versions): pinned footprint scored a real mainnet address 94/100 under 5/5 validator consensus; third-party evaluation rejected by the self-evaluation guard; a self-evaluation that attached a whale's footprint URL as "supporting evidence" was accepted but scored the wallet's own thin footprint (31/100) — the injected URL never reached the panel; principal disbursement, utilization premium, solvency refusal, repayment interest booking, and default write-off all verified with balance checks.
 
 > **GenVM lessons baked in (July 2026).** Wallet payouts go through an empty `@gl.evm.contract_interface` proxy (`emit_transfer` at a plain wallet strands value). `Address()` must never re-wrap an `Address`-typed storage field. Every address boundary is normalized (`str → strip → lower`) because CLI args arrive as Address objects and storage keys are case-sensitive.
 

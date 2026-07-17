@@ -38,15 +38,34 @@ LIQUIDATION_INCENTIVE_BPS = 500           # 5 % of seized collateral
 # Smallest partial repayment the pool will book, to stop dust spam. 0.001 GEN.
 MIN_PARTIAL_WEI = 10**15
 
-# Keyless public UTC clocks, tried in order; one clean read suffices.
+# Keyless public UTC clocks, cross-checked against each other.
+#
+# Both were verified live from Studionet validators (2026-07-17) and agree with
+# true UTC to within ~30s. Two earlier candidates were REMOVED after on-chain
+# probing proved them unusable: worldtimeapi.org fails to load entirely
+# (WEBPAGE_LOAD_FAILED), and timeapi.io serves a clock ~6 minutes BEHIND real
+# UTC — its disagreement tripped the divergence guard below and made the whole
+# clock read as untrusted. Never re-add a source without probing it on-chain.
 TIME_SOURCES = [
-    "https://timeapi.io/api/Time/current/zone?timeZone=UTC",
     "https://cloudflare.com/cdn-cgi/trace",
-    "https://worldtimeapi.org/api/timezone/Etc/UTC",
+    "https://eth.blockscout.com/api/v2/main-page/blocks",
 ]
+
+# Two readings further apart than this mean a source is lying or stale → distrust
+# the clock entirely rather than act on a time we can't corroborate.
+MAX_CLOCK_DIVERGENCE = 300
 
 # Sanity floor — any parsed epoch below this (≈2023-11) is treated as garbage.
 MIN_SANE_EPOCH = 1_700_000_000
+
+
+def _epoch_from_iso(s: str) -> int:
+    """"2026-07-17T07:35:11.000000Z" → epoch. UTC only; the Z suffix is assumed."""
+    s = str(s).strip()
+    date_part, _, rest = s.partition("T")
+    y, m, d = [int(x) for x in date_part.split("-")]
+    hh, mm, ss = [int(x) for x in rest.split(".")[0].replace("Z", "").split(":")[:3]]
+    return _epoch_from_civil(y, m, d, hh, mm, ss)
 
 
 def _epoch_from_civil(y: int, m: int, d: int, hh: int, mm: int, ss: int) -> int:
@@ -70,29 +89,23 @@ def _parse_epoch_from_clock(url: str, raw: str) -> int:
     """
     Pull a Unix epoch out of whatever a given clock source returned. Each source
     has a distinct shape; any parse failure returns 0 so the caller moves on.
-      • timeapi.io       → JSON {year,month,day,hour,minute,seconds}
       • cloudflare trace → text with a `ts=1710000000.123` line
-      • worldtimeapi     → JSON {unixtime: 1710000000}
+      • blockscout       → JSON list of blocks; [0].timestamp is Ethereum's own
+        latest block time — a clock produced by a decentralised consensus rather
+        than a single vendor's server (and ~13s fresh, given 12s block times)
     """
     try:
         text = raw if isinstance(raw, str) else str(raw)
-        if "timeapi.io" in url:
-            d = json.loads(text)
-            return _epoch_from_civil(
-                d["year"], d["month"], d["day"],
-                d.get("hour", 0), d.get("minute", 0), d.get("seconds", 0),
-            )
         if "cloudflare.com" in url:
             for line in text.splitlines():
                 if line.startswith("ts="):
                     return int(float(line[3:]))
             return 0
-        if "worldtimeapi.org" in url:
+        if "blockscout.com" in url:
             d = json.loads(text)
-            return int(d["unixtime"])
-        # Unknown source: last-ditch try for a bare JSON unixtime field.
-        d = json.loads(text)
-        return int(d.get("unixtime", 0))
+            items = d if isinstance(d, list) else d.get("items", [])
+            return _epoch_from_iso(items[0]["timestamp"]) if items else 0
+        return 0
     except Exception:
         return 0
 
@@ -231,8 +244,11 @@ class Kredo(gl.Contract):
                 epoch = _parse_epoch_from_clock(url, raw)
                 if epoch > MIN_SANE_EPOCH:
                     cands.append(epoch)
-            if len(cands) >= 2 and (max(cands) - min(cands)) > 300:
+            if len(cands) >= 2 and (max(cands) - min(cands)) > MAX_CLOCK_DIVERGENCE:
                 return "0"                       # sources diverge → distrust
+            # Take the EARLIEST corroborated reading: a conservative "now" delays
+            # late fees and liquidation, so clock skew can only ever favour the
+            # borrower, never the party trying to seize their collateral.
             return str(min(cands)) if cands else "0"
 
         principle = (
@@ -1072,8 +1088,16 @@ Respond ONLY with this JSON (no markdown, no extra text):
         now = self._utc_now()
         provably_overdue = due_epoch > 0 and now > 0 and now > grace_epoch
 
-        if not (provably_overdue or is_owner):
-            # Not proven late and caller isn't the keeper → refuse.
+        # The owner is a keeper of LAST RESORT — and ONLY for loans that carry no
+        # on-chain due date (the clock was unreachable at origination), which is
+        # the only case where lateness cannot be proven. Once a loan has a real
+        # due date, nobody — the owner included — can liquidate it before the
+        # fetched clock clears due + grace. Without this restriction the owner
+        # could still seize a current borrower's collateral at will, which is
+        # exactly the trusted-keeper dependency this design exists to remove.
+        owner_fallback = is_owner and due_epoch <= 0
+
+        if not (provably_overdue or owner_fallback):
             if due_epoch <= 0:
                 raise gl.vm.UserError(
                     "loan has no on-chain due date (clock was down at "
@@ -1135,7 +1159,7 @@ Respond ONLY with this JSON (no markdown, no extra text):
         return {
             "loan_id": loan_id,
             "status": "LIQUIDATED",
-            "liquidated_by": "keeper" if is_owner else "permissionless",
+            "liquidated_by": "permissionless" if provably_overdue else "keeper",
             "provably_overdue": provably_overdue,
             "seized_collateral": seized,
             "keeper_incentive": incentive,
